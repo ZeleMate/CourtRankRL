@@ -1,123 +1,196 @@
 """
-Module for reinforcement learning environment.
+Module for the reinforcement learning environment focused on ranking search results.
 """
 
 import gym
 from gym import spaces
 import numpy as np
-from ..models.embedding import encode_queries
-from collections import deque
+from typing import List, Dict, Tuple, Any
+from ..models.embedding import EmbeddingModel
+from ..search.semantic_search import SemanticSearch
 
-def compute_similarity(embedding1, embedding2):
+class RankingEnv(gym.Env):
     """
-    Compute cosine similarity between two embeddings.
-    
-    Args:
-        embedding1: First embedding vector
-        embedding2: Second embedding vector
-        
-    Returns:
-        float: Cosine similarity between the embeddings
+    RL environment for learning to re-rank legal document search results.
     """
-    norm1 = np.linalg.norm(embedding1)
-    norm2 = np.linalg.norm(embedding2)
-    
-    if norm1 == 0 or norm2 == 0:
-        return 0.0
-    
-    return np.dot(embedding1, embedding2) / (norm1 * norm2)
+    metadata = {'render.modes': ['human']}
 
-class LegalSearchEnv(gym.Env):
-    """
-    Reinforcement learning environment for legal document search.
-    """
-    
-    def __init__(self, model, documents, target_doc_idx=None):
+    def __init__(self, model: EmbeddingModel, documents: List[str], search_engine: SemanticSearch, initial_top_k: int):
         """
         Initialize environment.
-        
+
         Args:
-            model: SentenceTransformer model
-            documents: List of document strings
-            target_doc_idx: Index of the target document (ground truth)
+            model: Embedding model instance.
+            documents: List of all document strings in the corpus.
+            search_engine: SemanticSearch instance for candidate retrieval.
+            initial_top_k: The number of initial candidates to retrieve and re-rank.
         """
         super().__init__()
         self.model = model
         self.documents = documents
-        self.action_space = spaces.Discrete(len(documents))  # choose a document
-        
-        # Sample embedding to get dimensions
-        sample_embedding = encode_queries(model, ["test query"])[0]
+        self.search_engine = search_engine
+        self.initial_top_k = initial_top_k
+
+        # --- State Space ---
+        # Represents the query and the initial list of candidate documents.
+        # Example: Concatenation of query embedding + K document embeddings.
+        # Needs careful design based on what the policy network expects.
+        embedding_dim = self.model.encode(["test"])[0].shape[0]
+        state_dim = embedding_dim * (1 + self.initial_top_k) # Query + K docs
         self.observation_space = spaces.Box(
-            low=0, high=1, 
-            shape=(sample_embedding.shape[0],), 
+            low=-np.inf, high=np.inf, # Embeddings can have negative values
+            shape=(state_dim,),
             dtype=np.float32
         )
-        
-        # Query for the environment
-        self.query_text = "Jogellenes elbocsátás miatt indított per"
-        self.query = encode_queries(model, [self.query_text])[0]
-        
-        # Target document (simulated ground truth)
-        self.target_doc_idx = target_doc_idx if target_doc_idx is not None else 1
 
-    def reset(self):
-        """Reset the environment and return initial observation."""
-        return np.array(self.query, dtype=np.float32)
+        # --- Action Space ---
+        # Represents the re-ranked order of the initial_top_k documents.
+        # Option 1: Output scores for each doc (requires sorting post-action). Size K.
+        # Option 2: Output a permutation directly (complex). Size K! or requires special handling.
+        # Option 3: Pairwise preferences (complex). Size K*(K-1)/2.
+        # Let's use Option 1: Output scores for simplicity in definition.
+        self.action_space = spaces.Box(
+            low=-np.inf, high=np.inf, # Scores can be anything
+            shape=(self.initial_top_k,),
+            dtype=np.float32
+        )
 
-    def step(self, action):
+        # Internal state
+        self.current_query: str = ""
+        self.current_query_embedding: np.ndarray | None = None
+        self.candidate_docs: List[Tuple[int, str, float]] = [] # (original_idx, text, initial_score)
+        self.candidate_embeddings: np.ndarray | None = None
+
+    def reset(self, query: str | None = None) -> np.ndarray:
         """
-        Take a step in the environment.
-        
+        Reset the environment with a new query and initial candidate set.
+
         Args:
-            action: Document index to select
-            
+            query: The search query string. If None, a default/random query might be used.
+
         Returns:
-            observation, reward, done, info
+            Initial observation (state).
         """
-        # Reward is positive if correct document selected, negative otherwise
-        reward = 1.0 if action == self.target_doc_idx else -0.5
-        done = True  # one-step episode for now
-        obs = np.array(self.query, dtype=np.float32)
-        info = {"selected_doc": self.documents[action]}
-        return obs, reward, done, info
+        if query is None:
+            # Replace with a more robust way to get queries for training/evaluation
+            query = "Jogellenes elbocsátás"
+        self.current_query = query
+        self.current_query_embedding = self.model.encode([query])[0].astype(np.float32)
 
-class RewardModel:
-    def __init__(self, embedding_dim: int = 3072):
-        self.weights = np.zeros(embedding_dim)
-        self.bias = 0.0
-        self.learning_rate = 0.01
-        self.feedback_history = deque(maxlen=1000)
-    def predict_reward(self, embedding: np.ndarray) -> float:
-        return np.dot(embedding, self.weights) + self.bias
-    def update(self, embedding: np.ndarray, feedback: float):
-        error = feedback - self.predict_reward(embedding)
-        self.weights += self.learning_rate * error * embedding
-        self.bias += self.learning_rate * error
+        # Get initial candidates from semantic search
+        self.candidate_docs = self.search_engine.search_candidates(query, self.initial_top_k)
 
-class LegalSearchRLHF(gym.Env):
-    def __init__(self, model, documents, search_engine, target_doc_idx=None):
-        self.model = model
-        self.documents = documents
-        self.search_engine = search_engine
-        self.target_doc_idx = target_doc_idx if target_doc_idx is not None else 1
-        self.embedding_dim = encode_queries(model, ["test query"])[0].shape[0]
-        self.reward_model = RewardModel(self.embedding_dim)
-        self.doc_embeddings = [encode_queries(model, [doc])[0] for doc in documents]
-        self.current_state = np.zeros(self.embedding_dim)
-        self.steps_in_episode = 0
-        self.max_steps_per_episode = 10
-        self.action_space = spaces.Discrete(len(documents))
-        self.observation_space = spaces.Box(low=0, high=1, shape=(self.embedding_dim,), dtype=np.float32)
+        # Ensure we have K candidates, pad if necessary (important for fixed-size state/action)
+        if len(self.candidate_docs) < self.initial_top_k:
+            # Handle padding: Add dummy docs/embeddings or adjust state/action space dynamically (more complex)
+            # For now, let's assume we always get K or handle errors if not.
+             print(f"Warning: Got {len(self.candidate_docs)} candidates, expected {self.initial_top_k}. Padding/error handling needed.")
+             # Simple padding example (not robust):
+             num_missing = self.initial_top_k - len(self.candidate_docs)
+             dummy_doc = (-1, "", 0.0)
+             self.candidate_docs.extend([dummy_doc] * num_missing)
 
-    def step(self, action):
-        selected_doc_embedding = self.doc_embeddings[action]
-        target_similarity = compute_similarity(selected_doc_embedding, self.doc_embeddings[self.target_doc_idx])
-        model_reward = self.reward_model.predict_reward(selected_doc_embedding)
-        reward = 0.7 * target_similarity + 0.3 * model_reward
-        self.current_state = (1 - 0.3) * self.current_state + 0.3 * selected_doc_embedding
-        self.steps_in_episode += 1
-        return self.current_state.astype(np.float32), reward, self.steps_in_episode >= self.max_steps_per_episode, {}
 
-    def update_reward_model(self, doc_idx: int, feedback: float):
-        self.reward_model.update(self.doc_embeddings[doc_idx], feedback)
+        # Get embeddings for candidate docs (handle potential missing docs if padding)
+        candidate_texts = [doc[1] for doc in self.candidate_docs if doc[0] != -1]
+        if candidate_texts:
+             embeddings = self.model.encode(candidate_texts).astype(np.float32)
+             # Need to map embeddings back to the padded list structure
+             self.candidate_embeddings = np.zeros((self.initial_top_k, self.current_query_embedding.shape[0]), dtype=np.float32)
+             valid_indices = [i for i, doc in enumerate(self.candidate_docs) if doc[0] != -1]
+             if len(valid_indices) == embeddings.shape[0]:
+                 self.candidate_embeddings[valid_indices, :] = embeddings
+             else:
+                 print("Error: Embedding count mismatch after encoding candidates.")
+                 # Fallback to zeros or raise error
+        else:
+             self.candidate_embeddings = np.zeros((self.initial_top_k, self.current_query_embedding.shape[0]), dtype=np.float32)
+
+
+        # Construct the state
+        state = self._get_state()
+        return state
+
+    def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, Dict]:
+        """
+        Take a step by applying the re-ranking action.
+        The reward is determined externally based on expert evaluation of the ranking produced by 'action'.
+
+        Args:
+            action: The action from the agent (e.g., scores for each candidate doc).
+
+        Returns:
+            observation: The current state (doesn't change within an episode for ranking).
+            reward: The reward for the ranking produced by the action (needs external calculation).
+            done: True, as ranking is typically a one-step process per query.
+            info: Dictionary containing the ranked list based on the action.
+        """
+        # 'action' contains scores for each of the K candidate documents.
+        # Higher scores should mean higher rank.
+        if len(action) != self.initial_top_k:
+            raise ValueError(f"Action length {len(action)} does not match initial_top_k {self.initial_top_k}")
+
+        # Create the ranked list based on scores
+        scored_candidates = list(zip(self.candidate_docs, action))
+        # Sort by score descending
+        scored_candidates.sort(key=lambda x: x[1], reverse=True)
+
+        # The final ranked list (containing original_idx, text, initial_score)
+        ranked_list = [item[0] for item in scored_candidates]
+
+        # The reward is NOT calculated here. It must be provided externally
+        # after expert evaluation of 'ranked_list' for the 'current_query'.
+        reward = 0.0 # Placeholder - must be calculated externally
+
+        done = True # Ranking is a single step per query
+        info = {
+            "query": self.current_query,
+            "initial_candidates": self.candidate_docs,
+            "ranked_list": ranked_list, # List of (original_idx, text, initial_score) tuples in the new order
+            "action_scores": action
+        }
+
+        # State doesn't change after the action in this setup
+        state = self._get_state()
+
+        return state, reward, done, info
+
+    def _get_state(self) -> np.ndarray:
+        """Construct the state vector from query and candidate embeddings."""
+        if self.current_query_embedding is None or self.candidate_embeddings is None:
+             # Return a zero vector or handle error appropriately
+             embedding_dim = self.observation_space.shape[0] // (1 + self.initial_top_k)
+             return np.zeros(self.observation_space.shape, dtype=np.float32)
+
+        # Concatenate query embedding and all candidate embeddings
+        state_parts = [self.current_query_embedding] + list(self.candidate_embeddings)
+        state = np.concatenate(state_parts).astype(np.float32)
+
+        # Ensure state shape matches observation space
+        if state.shape[0] != self.observation_space.shape[0]:
+             # Handle potential shape mismatch due to padding/errors
+             print(f"Warning: State shape mismatch. Expected {self.observation_space.shape[0]}, got {state.shape[0]}.")
+             # Attempt to fix or raise error - e.g., pad/truncate state
+             expected_len = self.observation_space.shape[0]
+             if state.shape[0] < expected_len:
+                 padded_state = np.zeros(expected_len, dtype=np.float32)
+                 padded_state[:state.shape[0]] = state
+                 state = padded_state
+             else:
+                 state = state[:expected_len]
+
+        return state
+
+    def render(self, mode='human'):
+        """Render the environment state (optional)."""
+        if mode == 'human':
+            print(f"Current Query: {self.current_query}")
+            print("Candidates:")
+            for i, (idx, doc, score) in enumerate(self.candidate_docs):
+                print(f"  {i+1}. (ID: {idx}, Score: {score:.4f}) {doc[:100]}...")
+        else:
+            super().render(mode=mode)
+
+    def close(self):
+        """Clean up environment resources."""
+        pass

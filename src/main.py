@@ -1,97 +1,200 @@
 """
-Main module for the Semantic Search + Reinforcement Learning project.
-This module orchestrates the components of the system.
+Main module for running the Semantic Search + RL Ranking system.
+Use command-line arguments to specify mode (search, train, etc.).
 """
 
 import os
 import sys
+import argparse
 
-# Add the project root directory to sys.path to ensure imports work correctly
+# Add the project root directory to sys.path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-import argparse
-from src.search.semantic_search import SemanticSearch, GraphSemanticSearch
-from src.rl.environment import LegalSearchEnv, LegalSearchRLHF
 from src.models.embedding import load_embedding_model
 from src.data_loader.legal_docs import load_documents_from_folder
+from src.search.semantic_search import SemanticSearch
+# Graph components are used in scripts/populate_graph.py or potentially for context enrichment
+# from src.graph.graph_db import GraphDBConnector
+# from src.graph.extractor import GraphExtractor
+from src.rl.agent import RLAgent
+from src.rl.environment import RankingEnv
+from src.rl.reward import load_expert_evaluations, compute_reward_from_evaluations
+from configs import config
+import pandas as pd # Import pandas for handling evaluations
 
 def parse_args():
     """Parse command-line arguments."""
-    parser = argparse.ArgumentParser(description="Semantic Search with RL")
-    parser.add_argument("--model", type=str, default="answerdotai/ModernBERT-base",
-                      help="Embedding model name")
-    parser.add_argument("--top_k", type=int, default=5, 
-                      help="Number of top documents to retrieve")
+    parser = argparse.ArgumentParser(description="Legal Semantic Search with RL Ranking")
+    parser.add_argument("mode", choices=['search', 'evaluate'], # Add 'train' mode handled by train_rl_agent.py
+                        help="Operation mode: 'search' for interactive search, 'evaluate' for batch evaluation.")
     parser.add_argument("--query", type=str, default="Jogellenes felmondás munkahelyen",
-                      help="Search query")
-    parser.add_argument("--doc_path", type=str, default="data/raw",
-                      help="Path to folder containing legal documents")
-    parser.add_argument("--similarity_threshold", type=float, default=0.5,
-                      help="Similarity threshold for graph-based search")
-    parser.add_argument("--use_rl", action="store_true",
-                      help="Use Reinforcement Learning for search refinement")
+                        help="Search query (for 'search' mode)")
+    parser.add_argument("--doc_path", type=str, default=config.RAW_DATA_PATH,
+                        help="Path to folder containing legal documents")
+    parser.add_argument("--model", type=str, default=config.EMBEDDING_MODEL_NAME,
+                        help="Embedding model name")
+    parser.add_argument("--top_k", type=int, default=config.FINAL_TOP_K,
+                        help="Number of final documents to display")
+    # Add other relevant arguments if needed
     return parser.parse_args()
 
-def simulate_user_feedback(results, target_doc):
-    """
-    Simulate user feedback on search results.
-    
-    Args:
-        results: List of (idx, doc) tuples from search results
-        target_doc: The target document to compare against
-        
-    Returns:
-        Dictionary mapping document indices to feedback scores
-    """
-    feedback = {}
-    for idx, doc in results:
-        # Simple simulation - higher score for longer common substrings
-        common_text = len(set(doc.split()).intersection(set(target_doc.split()))) / len(set(doc.split()).union(set(target_doc.split())))
-        feedback[idx] = min(1.0, max(0.1, common_text * 2))  # Scale between 0.1 and 1.0
-    return feedback
+def run_search(args, documents, search_engine, rl_agent):
+    """Handles the interactive search mode."""
+    query = args.query
+    print(f"Query: {query}")
+
+    # 1. Initial Candidate Retrieval
+    initial_candidates = search_engine.search_candidates(query, config.INITIAL_TOP_K)
+    if not initial_candidates:
+        print("No candidates found.")
+        return
+
+    print(f"\nInitial {len(initial_candidates)} candidates (Semantic Search):")
+    for i, (idx, doc, score) in enumerate(initial_candidates):
+        print(f"  {i+1}. (ID: {idx}, Score: {score:.4f}) {doc[:100]}...")
+
+    # 2. Prepare State for RL Agent
+    # This requires constructing the state vector as defined in RankingEnv
+    query_embedding = search_engine.model.encode([query])[0].astype(np.float32)
+    candidate_embeddings = np.zeros((config.INITIAL_TOP_K, query_embedding.shape[0]), dtype=np.float32)
+    valid_indices = [i for i, doc in enumerate(initial_candidates) if doc[0] != -1] # Assuming -1 is invalid index
+    if valid_indices:
+        texts_to_encode = [initial_candidates[i][1] for i in valid_indices]
+        if texts_to_encode:
+            embeddings = search_engine.model.encode(texts_to_encode).astype(np.float32)
+            if len(valid_indices) == embeddings.shape[0]:
+                 candidate_embeddings[valid_indices, :] = embeddings
+            else:
+                 print("Warning: Embedding count mismatch during state preparation.")
+
+    state_parts = [query_embedding] + list(candidate_embeddings)
+    state = np.concatenate(state_parts).astype(np.float32)
+    # Ensure state shape matches agent's expected input dim
+    expected_len = config.POLICY_NETWORK_PARAMS['input_dim']
+    if state.shape[0] != expected_len:
+        print(f"Warning: State shape mismatch in search. Expected {expected_len}, got {state.shape[0]}. Adjusting...")
+        if state.shape[0] < expected_len:
+            padded_state = np.zeros(expected_len, dtype=np.float32)
+            padded_state[:state.shape[0]] = state
+            state = padded_state
+        else:
+            state = state[:expected_len]
+
+
+    # 3. RL Agent Re-ranking
+    action_scores = rl_agent.select_action(state)
+
+    # Combine candidates with scores and sort
+    scored_candidates = list(zip(initial_candidates, action_scores))
+    scored_candidates.sort(key=lambda x: x[1], reverse=True)
+    final_ranked_list = [item[0] for item in scored_candidates] # List of (original_idx, text, initial_score)
+
+    # 4. Display Final Results
+    print(f"\nFinal Top {args.top_k} Results (RL Re-ranked):")
+    for i, (idx, doc, initial_score) in enumerate(final_ranked_list[:args.top_k]):
+         rl_score = scored_candidates[i][1] # Get the score assigned by RL agent
+         print(f"  {i+1}. (ID: {idx}, RL Score: {rl_score:.4f}, Initial Score: {initial_score:.4f}) {doc[:150]}...")
+
+    # 5. (Optional) Graph Context Enrichment
+    # Here you could query the graph database for context about the top results
+    # e.g., graph_connector.get_neighbors(NODE_JUDGMENT, top_result_id)
+
+def run_evaluation(args, documents, search_engine, rl_agent, eval_df):
+    """Handles batch evaluation mode."""
+    print("Running evaluation...")
+    # Use queries from the evaluation dataset
+    queries = eval_df['query'].unique()
+    results = []
+
+    for query in queries:
+        # --- Perform search and re-ranking as in run_search ---
+        initial_candidates = search_engine.search_candidates(query, config.INITIAL_TOP_K)
+        if not initial_candidates: continue
+
+        # Prepare state (simplified, reuse logic from run_search or RankingEnv.reset)
+        query_embedding = search_engine.model.encode([query])[0].astype(np.float32)
+        # ... (construct full state vector including candidate embeddings) ...
+        # This state construction needs to be robustly implemented
+        state = np.zeros(config.POLICY_NETWORK_PARAMS['input_dim'], dtype=np.float32) # Placeholder state
+
+        action_scores = rl_agent.select_action(state)
+        scored_candidates = list(zip(initial_candidates, action_scores))
+        scored_candidates.sort(key=lambda x: x[1], reverse=True)
+        rl_ranked_list = [item[0] for item in scored_candidates]
+
+        # --- Calculate Metrics ---
+        # Get relevance scores from expert evaluations
+        initial_relevance = get_relevance_scores_for_ranking(query, initial_candidates, eval_df)
+        rl_relevance = get_relevance_scores_for_ranking(query, rl_ranked_list, eval_df)
+
+        # Calculate NDCG@k for both rankings
+        k = args.top_k
+        initial_ndcg = calculate_ndcg(initial_relevance, k)
+        rl_ndcg = calculate_ndcg(rl_relevance, k)
+
+        results.append({
+            "query": query,
+            f"initial_ndcg@{k}": initial_ndcg,
+            f"rl_ndcg@{k}": rl_ndcg,
+            "improvement": rl_ndcg - initial_ndcg
+        })
+        print(f"Query: {query[:50]}... | Initial NDCG@{k}: {initial_ndcg:.4f} | RL NDCG@{k}: {rl_ndcg:.4f}")
+
+    # --- Aggregate and Print Results ---
+    results_df = pd.DataFrame(results)
+    print("\n--- Evaluation Summary ---")
+    print(results_df.describe())
+    print("\nAverage Improvement:", results_df['improvement'].mean())
+
 
 def main():
     """Main function."""
     args = parse_args()
 
     # Load embedding model
+    print(f"Loading embedding model: {args.model}")
     model = load_embedding_model(args.model)
 
-    # Load real legal documents from folder
+    # Load documents
+    print(f"Loading documents from: {args.doc_path}")
     documents = load_documents_from_folder(args.doc_path)
     if not documents:
-        print("No documents found in folder:", args.doc_path)
+        print(f"Error: No documents found in {args.doc_path}. Exiting.")
         return
+    print(f"Loaded {len(documents)} documents.")
 
-    # Initialize semantic search
-    semantic_search = GraphSemanticSearch(model, documents, similarity_threshold=args.similarity_threshold)
+    # Initialize semantic search engine
+    print("Initializing semantic search engine...")
+    search_engine = SemanticSearch(model, documents)
+    print("Semantic search engine initialized.")
 
-    # Search query
-    results = semantic_search.search(args.query, args.top_k)
-    print(f"Query: {args.query}")
-    print("Top documents:")
-    for i, doc in results:
-        print(f"- {doc[:200]}...\n")  # print preview
+    # Initialize RL agent
+    print("Initializing RL agent...")
+    agent_input_dim = config.POLICY_NETWORK_PARAMS['input_dim']
+    agent_output_dim = config.INITIAL_TOP_K # Agent outputs scores for K candidates
+    rl_agent = RLAgent(input_dim=agent_input_dim,
+                       output_dim=agent_output_dim,
+                       hidden_dim=config.POLICY_NETWORK_PARAMS['hidden_dim'])
+    rl_agent.load() # Load pre-trained weights if available
+    print("RL agent initialized.")
 
-    # Initialize RL environment
-    env = LegalSearchRLHF(model, documents, semantic_search, target_doc_idx=1)
+    # Initialize Graph Connector (optional, if used for context)
+    # print("Initializing Graph DB connector...")
+    # graph_connector = GraphDBConnector()
 
-    # Simple random agent for demonstration
-    obs = env.reset()
-    action = env.action_space.sample()
-    obs, reward, done, _ = env.step(action)
-    print("\nRL Demo:")
-    print(f"Selected document: {documents[action][:200]}...")
-    print(f"Reward: {reward}")
+    if args.mode == 'search':
+        run_search(args, documents, search_engine, rl_agent)
+    elif args.mode == 'evaluate':
+        # Load expert evaluations needed for evaluation mode
+        print(f"Loading expert evaluations from: {config.EXPERT_EVAL_PATH}")
+        eval_df = load_expert_evaluations()
+        if eval_df.empty:
+             print("Warning: Evaluation data is empty. Cannot run evaluation.")
+        else:
+             run_evaluation(args, documents, search_engine, rl_agent, eval_df)
 
-    if args.use_rl:
-        for idx, score in simulate_user_feedback(results, documents[env.target_doc_idx]).items():
-            env.update_reward_model(idx, score)
-            semantic_search.update_weights(idx, score)
-        refined_results = semantic_search.search(args.query, top_k=args.top_k, use_pagerank=True)
-        print("Refined top documents:")
-        for i, doc in refined_results:
-            print(f"- {doc[:200]}...\n")  # print preview
+    # Close graph connection if opened
+    # graph_connector.close()
 
 if __name__ == "__main__":
     main()
