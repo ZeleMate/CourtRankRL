@@ -5,6 +5,8 @@ import spacy
 from typing import List, Dict, Tuple
 # from transformers import pipeline # Optional: for more advanced models
 
+from .. import config # Assuming config.py is in the parent directory
+
 class GraphExtractor:
     """Extracts entities and relationships for the graph database."""
 

@@ -21,6 +21,8 @@ from src.rl.environment import RankingEnv
 from src.rl.reward import load_expert_evaluations, compute_reward_from_evaluations
 from configs import config
 import pandas as pd # Import pandas for handling evaluations
+import numpy as np
+from tqdm import tqdm # For progress bar
 
 def parse_args():
     """Parse command-line arguments."""
@@ -98,6 +100,63 @@ def run_search(args, documents, search_engine, rl_agent):
     # 5. (Optional) Graph Context Enrichment
     # Here you could query the graph database for context about the top results
     # e.g., graph_connector.get_neighbors(NODE_JUDGMENT, top_result_id)
+
+def get_relevance_scores_for_ranking(query, ranked_documents, eval_df):
+    """
+    Get relevance scores for a list of ranked documents based on expert evaluations.
+    
+    Args:
+        query: The search query
+        ranked_documents: List of (doc_id, doc_text, score) tuples
+        eval_df: DataFrame containing expert evaluations
+        
+    Returns:
+        List of relevance scores corresponding to the ranked documents
+    """
+    relevance_scores = []
+    
+    # Filter evaluation data for this query
+    query_evals = eval_df[eval_df['query'] == query]
+    
+    for doc_id, _, _ in ranked_documents:
+        # Find the relevance score in evaluation data
+        doc_eval = query_evals[query_evals['doc_id'] == doc_id]
+        if not doc_eval.empty:
+            # Assuming there's a 'relevance' column with scores
+            relevance_scores.append(float(doc_eval['relevance'].iloc[0]))
+        else:
+            # If document not evaluated, assume zero relevance
+            relevance_scores.append(0.0)
+    
+    return relevance_scores
+
+def calculate_ndcg(relevance_scores, k):
+    """
+    Calculate Normalized Discounted Cumulative Gain.
+    
+    Args:
+        relevance_scores: List of relevance scores for documents
+        k: Number of documents to consider (NDCG@k)
+        
+    Returns:
+        NDCG value between 0.0 and 1.0
+    """
+    # Ensure we only consider top k items
+    relevance_scores = relevance_scores[:k]
+    
+    # If no relevant documents, return 0
+    if not relevance_scores or sum(relevance_scores) == 0:
+        return 0.0
+    
+    # Calculate DCG (Discounted Cumulative Gain)
+    dcg = relevance_scores[0] + sum(rel / np.log2(i + 2) for i, rel in enumerate(relevance_scores[1:]))
+    
+    # Calculate IDCG (Ideal DCG - when documents are sorted by relevance)
+    ideal_relevance = sorted(relevance_scores, reverse=True)
+    idcg = ideal_relevance[0] + sum(rel / np.log2(i + 2) for i, rel in enumerate(ideal_relevance[1:]))
+    
+    # Return normalized score
+    return dcg / idcg if idcg > 0 else 0.0
 
 def run_evaluation(args, documents, search_engine, rl_agent, eval_df):
     """Handles batch evaluation mode."""
