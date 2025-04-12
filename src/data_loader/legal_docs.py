@@ -21,7 +21,7 @@ def _import_docx():
 
 def _import_rtf():
     try:
-        from striprtf.striprtf import rtf_to_text
+        from striprtf import rtf_to_text
         return rtf_to_text, True
     except ImportError:
         return None, False
