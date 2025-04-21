@@ -29,7 +29,6 @@ tqdm
 # python-docx
 # striprtf
 
-faiss-cpu # or faiss-gpu if you have CUDA installed and configured
 # Note: If you want to use the Neo4j graph database, install the Neo4j Python driver
 
 striprtf # For RTF file handling

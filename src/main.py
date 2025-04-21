@@ -165,25 +165,67 @@ def run_evaluation(args, documents, search_engine, rl_agent, eval_df):
     queries = eval_df['query'].unique()
     results = []
 
-    for query in queries:
+    for query in tqdm(queries, desc="Evaluating queries"):
         # --- Perform search and re-ranking as in run_search ---
         initial_candidates = search_engine.search_candidates(query, config.INITIAL_TOP_K)
-        if not initial_candidates: continue
+        if not initial_candidates:
+            print(f"Skipping query '{query[:30]}...' - no initial candidates found.")
+            continue
 
-        # Prepare state (simplified, reuse logic from run_search or RankingEnv.reset)
+        # --- Prepare state (reuse logic from run_search) ---
         query_embedding = search_engine.model.encode([query])[0].astype(np.float32)
-        # ... (construct full state vector including candidate embeddings) ...
-        # This state construction needs to be robustly implemented
-        state = np.zeros(config.POLICY_NETWORK_PARAMS['input_dim'], dtype=np.float32) # Placeholder state
+        candidate_embeddings = np.zeros((config.INITIAL_TOP_K, query_embedding.shape[0]), dtype=np.float32)
+        
+        # Pad candidates if fewer than INITIAL_TOP_K were found
+        padded_candidates = initial_candidates[:]
+        if len(padded_candidates) < config.INITIAL_TOP_K:
+            num_missing = config.INITIAL_TOP_K - len(padded_candidates)
+            # Use a consistent dummy structure, e.g., (-1, "", 0.0)
+            dummy_doc = (-1, "", 0.0) 
+            padded_candidates.extend([dummy_doc] * num_missing)
+        
+        # Get embeddings only for valid candidates
+        valid_indices = [i for i, doc in enumerate(padded_candidates) if doc[0] != -1]
+        texts_to_encode = [padded_candidates[i][1] for i in valid_indices]
+        
+        if texts_to_encode:
+            embeddings = search_engine.model.encode(texts_to_encode).astype(np.float32)
+            if len(valid_indices) == embeddings.shape[0]:
+                candidate_embeddings[valid_indices, :] = embeddings
+            else:
+                print(f"Warning: Embedding count mismatch for query '{query[:30]}...'.")
+                # Handle mismatch, e.g., skip query or use zeros
+                continue # Skip this query if embeddings are inconsistent
+
+        state_parts = [query_embedding] + list(candidate_embeddings)
+        state = np.concatenate(state_parts).astype(np.float32)
+
+        # Ensure state shape matches agent's expected input dim
+        expected_len = config.POLICY_NETWORK_PARAMS['input_dim']
+        if state.shape[0] != expected_len:
+            # This logic should ideally match the one in run_search and app.py
+            # print(f"Warning: State shape mismatch in evaluation for query '{query[:30]}...'. Expected {expected_len}, got {state.shape[0]}. Adjusting...")
+            if state.shape[0] < expected_len:
+                padded_state = np.zeros(expected_len, dtype=np.float32)
+                padded_state[:state.shape[0]] = state
+                state = padded_state
+            else:
+                state = state[:expected_len]
+        # --- End of state preparation ---
 
         action_scores = rl_agent.select_action(state)
-        scored_candidates = list(zip(initial_candidates, action_scores))
-        scored_candidates.sort(key=lambda x: x[1], reverse=True)
-        rl_ranked_list = [item[0] for item in scored_candidates]
+        # Use padded_candidates here as action_scores correspond to the padded list
+        scored_candidates = list(zip(padded_candidates, action_scores))
+        # Filter out dummy candidates *after* scoring, before sorting for RL ranking
+        valid_scored_candidates = [sc for sc in scored_candidates if sc[0][0] != -1]
+        valid_scored_candidates.sort(key=lambda x: x[1], reverse=True)
+        # rl_ranked_list contains only valid candidates now
+        rl_ranked_list = [item[0] for item in valid_scored_candidates]
 
         # --- Calculate Metrics ---
-        # Get relevance scores from expert evaluations
+        # Get relevance scores from expert evaluations for the *original* candidates
         initial_relevance = get_relevance_scores_for_ranking(query, initial_candidates, eval_df)
+        # Get relevance scores for the RL-ranked list (which contains only valid docs)
         rl_relevance = get_relevance_scores_for_ranking(query, rl_ranked_list, eval_df)
 
         # Calculate NDCG@k for both rankings
@@ -197,9 +239,14 @@ def run_evaluation(args, documents, search_engine, rl_agent, eval_df):
             f"rl_ndcg@{k}": rl_ndcg,
             "improvement": rl_ndcg - initial_ndcg
         })
-        print(f"Query: {query[:50]}... | Initial NDCG@{k}: {initial_ndcg:.4f} | RL NDCG@{k}: {rl_ndcg:.4f}")
+        # Optional: print per-query results if needed, but tqdm gives progress
+        # print(f"Query: {query[:50]}... | Initial NDCG@{k}: {initial_ndcg:.4f} | RL NDCG@{k}: {rl_ndcg:.4f}")
 
     # --- Aggregate and Print Results ---
+    if not results:
+        print("\nNo queries were successfully evaluated.")
+        return
+        
     results_df = pd.DataFrame(results)
     print("\n--- Evaluation Summary ---")
     print(results_df.describe())

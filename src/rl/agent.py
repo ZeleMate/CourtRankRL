@@ -7,7 +7,7 @@ import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 from typing import List, Tuple, Dict, Any
-from ...configs import config
+from configs import config
 
 class RankingPolicyNetwork(nn.Module):
     """Neural network to parameterize the ranking policy."""

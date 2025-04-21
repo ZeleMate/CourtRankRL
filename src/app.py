@@ -13,6 +13,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from src.models.embedding import load_embedding_model
 from src.search.semantic_search import SemanticSearch
 from src.rl.agent import RLAgent
+from src.data_loader.legal_docs import load_documents_from_folder # Import the loader
 from configs import config
 
 # --- Initialization ---
@@ -21,28 +22,31 @@ app = Flask(__name__)
 # Load models and data (consider loading lazily or using a dedicated setup)
 print("Loading components for Flask app...")
 model = load_embedding_model(config.EMBEDDING_MODEL_NAME)
-# Load documents - replace with actual loading
-documents = [
-    "A munkáltató rendkívüli felmondással megszüntette a munkaviszonyt.",
-    "A munkavállaló bírósághoz fordult az elbocsátása miatt.",
-    "A bíróság elutasította a keresetet, mert az eljárás jogszerű volt.",
-    "A munkáltató nem tartotta be a felmondási időt.",
-    "A per tárgya a végkielégítés mértéke volt.",
-    "A kollektív szerződés szabályozza a felmondási védelmet.",
-    "A jogellenes munkaviszony megszüntetés következményei.",
-    "A próbaidő alatti azonnali hatályú felmondás feltételei.",
-    "A munkavállaló kártérítési igénye jogellenes elbocsátás esetén.",
-    "A munkáltató bizonyítási kötelezettsége felmondáskor."
-]
-if not documents:
-    print("Error: No documents loaded for Flask app.")
-    # Handle error appropriately
 
-search_engine = SemanticSearch(model, documents)
+# Load documents from the configured path
+print(f"Loading documents from: {config.RAW_DATA_PATH}")
+# Load only text content for the app
+documents_data = load_documents_from_folder(config.RAW_DATA_PATH, include_metadata=False)
+if isinstance(documents_data, list) and documents_data and isinstance(documents_data[0], dict):
+    # If metadata was included (shouldn't be based on include_metadata=False, but handle defensively)
+    documents = [doc.get('text', '') for doc in documents_data]
+elif isinstance(documents_data, list):
+    documents = documents_data # Assume list of strings
+else:
+    documents = [] # Handle unexpected return type
+
+if not documents:
+    print(f"Warning: No documents loaded from {config.RAW_DATA_PATH}. The search might not work correctly.")
+    # Consider raising an error or providing default behavior
+else:
+    print(f"Loaded {len(documents)} documents.")
+
+
+search_engine = SemanticSearch(model, documents) # Initialize with loaded documents
 rl_agent = RLAgent(input_dim=config.POLICY_NETWORK_PARAMS['input_dim'],
                    output_dim=config.INITIAL_TOP_K,
                    hidden_dim=config.POLICY_NETWORK_PARAMS['hidden_dim'])
-rl_agent.load()
+rl_agent.load() # Attempt to load the pre-trained agent
 print("Components loaded.")
 
 # --- Flask Routes ---

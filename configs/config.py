@@ -1,12 +1,17 @@
 """
 Configuration settings for the project.
 """
+import os # Import os to potentially read API key from environment
 
 # Model configuration
 # Choose appropriate model like 'SZTAKI-HLT/hubert-base-cc', 'sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2', or a specific LegalBERT
-EMBEDDING_MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+# Using OpenAI's API
+EMBEDDING_MODEL_NAME = "openai/text-embedding-3-large"
 # Update dimension based on the chosen model
-EMBEDDING_DIMENSION = 384  # Example for paraphrase-multilingual-MiniLM-L12-v2
+EMBEDDING_DIMENSION = 3072  # Dimension for text-embedding-3-large
+
+# OpenAI API Key - IMPORTANT: Set this as an environment variable 'OPENAI_API_KEY'
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "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") # Example, better to just read from env
 
 # Search configuration
 INITIAL_TOP_K = 20 # Number of candidates retrieved by semantic search for RL re-ranking
@@ -21,7 +26,7 @@ GRAPH_DB_PASSWORD = "password" # Use environment variables in production
 # RL configuration
 RL_ALGORITHM = "GRPO" # or "PolicyGradient", "PPO", etc.
 POLICY_NETWORK_PARAMS = {
-    "input_dim": EMBEDDING_DIMENSION * (INITIAL_TOP_K + 1), # Example: query emb + K doc embs
+    "input_dim": EMBEDDING_DIMENSION * (INITIAL_TOP_K + 1), # Updated dimension used here
     "hidden_dim": 256,
     "output_dim": INITIAL_TOP_K # Example: scores for each doc
 }
@@ -32,7 +37,7 @@ TRAINING_BATCH_SIZE = 32 # Number of query-ranking pairs per update
 MAX_TRAINING_ITERATIONS = 1000 # Total training iterations
 
 # Data paths
-RAW_DATA_PATH = "data/raw"
+RAW_DATA_PATH = "/Users/zelenyianszkimate/Downloads/BHGY-k" # Updated path
 PROCESSED_DATA_PATH = "data/processed"
 MODEL_SAVE_PATH = "models"
 GRAPH_SCHEMA_PATH = "configs/graph_schema.json" # Optional: if schema is defined in a file
