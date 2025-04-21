@@ -10,6 +10,7 @@ from typing import List, Dict, Optional, Union
 import logging
 import concurrent.futures
 from functools import lru_cache
+import pandas as pd
 
 # Lazy imports to improve startup time
 def _import_docx():
@@ -277,3 +278,33 @@ def is_format_supported(extension: str) -> bool:
     """Check if a file format is supported by the loader."""
     supported = get_supported_extensions()
     return extension.lower() in supported and supported[extension.lower()]
+
+def load_processed_documents_from_csv(file_path: str, text_column: str = 'text') -> List[str]:
+    """
+    Load document text from a preprocessed CSV file (potentially gzipped).
+
+    Args:
+        file_path: Path to the CSV file (e.g., .csv or .csv.gz).
+        text_column: The name of the column containing the document text.
+
+    Returns:
+        List of document strings.
+    """
+    logger.info(f"Loading processed documents from {file_path}")
+    try:
+        # Pandas automatically handles .gz compression based on extension
+        df = pd.read_csv(file_path)
+        if text_column not in df.columns:
+            logger.error(f"Text column '{text_column}' not found in {file_path}. Available columns: {df.columns.tolist()}")
+            return []
+        
+        # Drop rows where the text column is NaN or empty, convert to string
+        documents = df[text_column].dropna().astype(str).tolist()
+        logger.info(f"Loaded {len(documents)} documents from {file_path}")
+        return documents
+    except FileNotFoundError:
+        logger.error(f"Processed data file not found: {file_path}")
+        return []
+    except Exception as e:
+        logger.error(f"Error loading processed data from {file_path}: {e}")
+        return []

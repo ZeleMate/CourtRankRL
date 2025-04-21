@@ -38,7 +38,7 @@ MAX_TRAINING_ITERATIONS = 1000 # Total training iterations
 
 # Data paths
 RAW_DATA_PATH = "/Users/zelenyianszkimate/Downloads/BHGY-k" # Updated path
-PROCESSED_DATA_PATH = "data/processed"
+PROCESSED_DATA_PATH = "/Users/zelenyianszkimate/Downloads/Feldolgozott BHGY-k/feldolgozott_hatarozatok.csv.gz" # Path to the output of preprocess_documents.py
 MODEL_SAVE_PATH = "models"
 GRAPH_SCHEMA_PATH = "configs/graph_schema.json" # Optional: if schema is defined in a file
 EXPERT_EVAL_PATH = "data/expert_evaluations.csv" # Path to store/load expert feedback

@@ -56,6 +56,7 @@ Ez a projekt szemantikus keresési képességeket kombinál megerősítéses tan
 - `scripts/`: Segédszkriptek.
   - `populate_graph.py`: Szkript a gráf adatbázis feltöltéséhez dokumentumokból (opcionális).
   - `train_rl_agent.py`: Szkript az RL ügynök tanításához szakértői értékelésekkel.
+  - `preprocess_documents.py`: Szkript jogi dokumentumok (.docx, .rtf) és a hozzájuk tartozó JSON metaadatok előfeldolgozására, szövegkinyerésre, lemmatizálásra, entitásfelismerésre és az eredmények CSV fájlba mentésére.
 - `configs/`: Konfigurációs fájlok.
   - `config.py`: Központi konfiguráció (modellnevek, API kulcsok, útvonalak, hiperparaméterek).
 - `templates/`: HTML sablonok a Flask alkalmazáshoz.
@@ -67,14 +68,21 @@ Ez a projekt szemantikus keresési képességeket kombinál megerősítéses tan
 
 A projekt többféleképpen használható:
 
-1.  **Interaktív keresés (Web UI):**
+1.  **Dokumentumok Előfeldolgozása:**
+    Futtassa a `scripts/preprocess_documents.py` szkriptet a nyers dokumentumok feldolgozásához. Győződjön meg róla, hogy a `DATA_DIR` és `OUT_PATH` változók helyesen vannak beállítva a szkriptben, vagy fontolja meg azok konfigurációs fájlba helyezését vagy parancssori argumentumként való átadását. Telepítenie kell a `hu_core_news_trf` spaCy modellt is (`python -m spacy download hu_core_news_trf`).
+    ```bash
+    python scripts/preprocess_documents.py
+    ```
+    Ez a szkript bejárja a `DATA_DIR` könyvtárat, párosítja a `.docx`/`.rtf` fájlokat a `.json` metaadat fájlokkal, kinyeri és normalizálja a szöveget, lemmatizálja, kinyeri az entitásokat, majd az eredményeket egy tömörített CSV fájlba (`OUT_PATH`) menti.
+
+2.  **Interaktív keresés (Web UI):**
     Indítsa el a Flask alkalmazást:
     ```bash
     python src/app.py
     ```
     Nyissa meg a böngészőjében a `http://127.0.0.1:5001` (vagy a terminálban megjelenő címet). Írja be a keresési lekérdezést, és a rendszer visszaadja a szemantikailag releváns és RL által újrarendezett találatokat.
 
-2.  **Parancssori keresés:**
+3.  **Parancssori keresés:**
     Használja a `src/main.py` szkriptet `search` módban:
     ```bash
     python src/main.py search --query "az ön keresési lekérdezése itt" --top_k 5
@@ -84,20 +92,20 @@ A projekt többféleképpen használható:
     python src/main.py search --help
     ```
 
-3.  **Kiértékelés:**
+4.  **Kiértékelés:**
     Futtassa a rendszert `evaluate` módban, hogy összehasonlítsa a kezdeti szemantikus keresés és az RL újrarendezés teljesítményét (NDCG alapján) a szakértői értékelésekkel (`EXPERT_EVAL_PATH` a `config.py`-ban):
     ```bash
     python src/main.py evaluate --top_k 5
     ```
 
-4.  **RL Ügynök Tanítása:**
+5.  **RL Ügynök Tanítása:**
     Használja a `scripts/train_rl_agent.py` szkriptet az RL ügynök tanításához. Szüksége lesz egy CSV fájlra (`EXPERT_EVAL_PATH`), amely tartalmazza a szakértői értékeléseket (pl. `query`, `doc_id`, `relevance` oszlopokkal).
     ```bash
     python scripts/train_rl_agent.py --iterations 1000 --batch_size 32
     ```
     A tanított ügynök modellje a `RL_AGENT_SAVE_PATH` helyre mentődik (`config.py`).
 
-5.  **(Opcionális) Gráf Adatbázis Feltöltése:**
+6.  **(Opcionális) Gráf Adatbázis Feltöltése:**
     Ha konfigurálta a Neo4j-t, futtassa a `scripts/populate_graph.py` szkriptet a dokumentumokból kinyert entitások és kapcsolatok adatbázisba töltéséhez. (Megjegyzés: Az `extractor.py`-nak implementálnia kell a tényleges NLP alapú kinyerési logikát.)
     ```bash
     python scripts/populate_graph.py --doc_path /eleresi/ut/a/dokumentumokhoz

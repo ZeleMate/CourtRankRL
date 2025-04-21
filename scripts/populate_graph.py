@@ -8,7 +8,7 @@ import argparse
 # Add project root to sys.path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from src.data_loader.legal_docs import load_documents_with_metadata # Use metadata loader
+from src.data_loader.legal_docs import load_processed_documents_from_csv # Use new loader
 from src.graph.extractor import GraphExtractor
 from src.graph.graph_db import GraphDBConnector
 from configs import config
@@ -16,25 +16,36 @@ from tqdm import tqdm # For progress bar
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Populate Graph Database from Documents")
-    parser.add_argument("--doc_path", type=str, default=config.RAW_DATA_PATH,
-                        help="Path to folder containing documents")
-    parser.add_argument("--batch_size", type=int, default=10,
-                        help="Number of documents to process before committing to DB")
-    # Add arguments for specific NLP models if needed
+    parser.add_argument("--doc_path", type=str, default=config.PROCESSED_DATA_PATH, # Use processed path by default
+                        help="Path to the processed documents CSV file")
+    parser.add_argument("--batch_size", type=int, default=16,
+                        help="Batch size for processing documents and embeddings")
+    parser.add_argument("--clear_db", action='store_true',
+                        help="Clear the graph database before populating")
     return parser.parse_args()
 
 def main():
     args = parse_args()
 
     print("Initializing components...")
-    # Load documents with metadata (filename can serve as initial ID)
-    documents_with_meta = load_documents_with_metadata(args.doc_path)
+    # Initialize Graph Database connection
+    db_connector = GraphDBConnector()
+    if args.clear_db:
+        print("Clearing the graph database...")
+        db_connector.clear_database()
+        print("Database cleared.")
+
+    # Load documents with metadata
+    print(f"Loading documents from: {args.doc_path}")
+    documents_with_meta = load_processed_documents_from_csv(args.doc_path) # Use new loader
     if not documents_with_meta:
-        print("No documents found. Exiting.")
+        print(f"Error: No documents found in {args.doc_path}. Exiting.")
+        db_connector.close()
         return
 
+    print(f"Loaded {len(documents_with_meta)} documents.")
+
     extractor = GraphExtractor() # Initialize NLP extractor
-    db_connector = GraphDBConnector() # Initialize DB connector
 
     print(f"Starting graph population from {len(documents_with_meta)} documents...")
 
