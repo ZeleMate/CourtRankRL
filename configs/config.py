@@ -2,6 +2,102 @@
 Configuration settings for the project.
 """
 import os # Import os to potentially read API key from environment
+from pathlib import Path
+
+# ------------------------------------------------------------------
+# Alapvető elérési utak
+# ------------------------------------------------------------------
+# Projekt gyökérkönyvtár (feltételezve, hogy a config.py a 'configs' mappában van)
+PROJECT_ROOT = Path(__file__).parent.parent
+
+# Adatkönyvtár (ahol a .json, .docx, .rtf fájlok vannak)
+# Módosítsd ezt a saját adatkönyvtárad elérési útjára!
+# Példa: DATA_DIR = Path("/path/to/your/data")
+DATA_DIR = PROJECT_ROOT / "BHGY-k" # Vagy adj meg abszolút útvonalat
+
+# Kimeneti könyvtár (ahová a feldolgozott CSV kerül)
+OUT_DIR = PROJECT_ROOT / "processed_data"
+OUT_FILENAME = "processed_documents.csv" # Kimeneti fájlnév (tömörítés nélkül)
+
+# ------------------------------------------------------------------
+# NLP Feldolgozási beállítások
+# ------------------------------------------------------------------
+# Használt spaCy modell neve
+# Győződj meg róla, hogy telepítve van: python -m spacy download hu_core_news_lg
+NLP_MODEL = "hu_core_news_lg" # Nagyobb, de potenciálisan pontosabb magyar modell
+
+# spaCy feldolgozás batch mérete (nlp.pipe)
+# Nagyobb érték gyorsabb lehet, de több memóriát használ.
+# Kísérletezz ezzel az értékkel a rendszeredhez igazítva.
+PROCESSING_BATCH_SIZE = 512 # Kezdő érték
+
+# spaCy párhuzamos feldolgozási szálak száma (n_process az nlp.pipe-ban)
+# -1: Az összes elérhető CPU mag használata (nagyon memóriaigényes lehet!)
+# 1: Nincs párhuzamosítás (legkisebb memóriahasználat)
+# 2, 3, 4, ...: Megadott számú processz használata (kompromisszum sebesség és memória között)
+# Kezdd 1-gyel vagy 2-vel 16GB RAM esetén, és figyeld a memóriahasználatot.
+SPACY_N_PROCESS = 2 # Ajánlott kezdőérték 16GB RAM-hoz
+
+# Tiltsa le a szükségtelen spaCy komponenseket a memória csökkentése érdekében?
+# Ha csak lemmatizálásra és/vagy entitásfelismerésre van szükség, a parser letiltható.
+# Ha az entitásfelismerés (NER) sem kell, azt is tiltsd le: ["parser", "ner"]
+DISABLE_SPACY_COMPONENTS = True # True esetén letiltja a 'parser'-t
+
+# Egyedi jogi stop szavak (opcionális, bővíthető)
+# Ezeket a szavakat a spaCy alapértelmezett stop szavaihoz adjuk hozzá.
+LEGAL_STOP_WORDS = {
+    "alperes", "felperes", "peres", "felek", "ítélet", "végzés", "határozat",
+    "bíróság", "törvényszék", "ítélőtábla", "kúria", "ügyészség", "ügyvéd",
+    "eljárás", "kereset", "fellebbezés", "felülvizsgálat", "indítvány",
+    "bizonyíték", "tanú", "szakértő", "tárgyalás", "jegyzőkönyv",
+    "beadvány", "indokolás", "rendelkező", "rész",
+    # Ide további releváns szavakat lehet felvenni
+}
+
+# ------------------------------------------------------------------
+# Kimeneti CSV beállítások
+# ------------------------------------------------------------------
+# Oszlopok, amelyeket a kimeneti CSV fájlba írunk
+# Válaszd ki a szükséges oszlopokat a memóriahasználat és a fájlméret csökkentése érdekében.
+OUTPUT_COLUMNS = [
+    'doc_id',
+    'birosag',
+    'jogterulet',
+    'hatarozat_id_mappa',
+    'text', # Eredeti szöveg (lehet, hogy nagy)
+    'lemmatized_text', # Lemmatizált szöveg
+    'plain_lemmas', # Ékezetmentesített lemmák
+    'entities', # Kinyert entitások (JSON string)
+    'metadata_json', # Eredeti metaadatok (JSON string)
+    # További metaadat oszlopok a JSON-ból, ha szükségesek voltak a DataFrame-ben
+    # pl. 'ev', 'hatarozat_szama', stb. (ezeket a 'records' összeállításánál kellene hozzáadni)
+]
+
+# Memória limit (GB) a chunk-olt CSV íráshoz
+# Ha a DataFrame becsült memóriaigénye meghaladja ezt az értéket,
+# a CSV fájl chunk-okban (részekben) lesz kiírva.
+# Állítsd be a rendelkezésre álló RAM egy részére (pl. 50-70%).
+MEMORY_LIMIT_GB = 12 # 8 GB limit 16 GB RAM esetén (hagy némi puffert)
+
+# CSV írás chunk mérete (sorok száma)
+# Csak akkor használatos, ha a MEMORY_LIMIT_GB-t túllépi a DataFrame.
+# Nagyobb érték gyorsabb lehet, de több memóriát használ az írási művelet alatt.
+# 0 vagy negatív érték esetén nem használ chunk-olt írást, még ha a limitet átlépi is.
+CSV_WRITE_CHUNK_SIZE = 10000 # 10,000 soros darabokban írás
+
+# ------------------------------------------------------------------
+# Egyéb beállítások (ha szükséges)
+# ------------------------------------------------------------------
+# Pl. loggolási szint, stb.
+
+# Ellenőrzés: DATA_DIR létezik-e (opcionális, a fő szkript is ellenőrzi)
+# if not DATA_DIR.exists() or not DATA_DIR.is_dir():
+#     print(f"Figyelmeztetés: A konfigurált DATA_DIR nem létezik vagy nem könyvtár: {DATA_DIR}")
+
+print(f"Konfiguráció betöltve. Projekt gyökér: {PROJECT_ROOT}")
+print(f"Adat könyvtár: {DATA_DIR}")
+print(f"Kimeneti könyvtár: {OUT_DIR}")
+print(f"spaCy modell: {NLP_MODEL}, Párhuzamos processzek: {SPACY_N_PROCESS}")
 
 # Model configuration
 # Choose appropriate model like 'SZTAKI-HLT/hubert-base-cc', 'sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2', or a specific LegalBERT

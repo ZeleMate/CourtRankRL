@@ -15,6 +15,7 @@ neo4j
 # Data Handling
 numpy
 pandas
+pyarrow # Added for Parquet caching
 
 # Reinforcement Learning
 gym
