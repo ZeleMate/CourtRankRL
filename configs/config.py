@@ -24,12 +24,12 @@ OUT_FILENAME = "processed_documents.csv" # Kimeneti fájlnév (tömörítés né
 # ------------------------------------------------------------------
 # Használt spaCy modell neve
 # Győződj meg róla, hogy telepítve van: python -m spacy download hu_core_news_lg
-NLP_MODEL = "hu_core_news_lg" # Nagyobb, de potenciálisan pontosabb magyar modell
+NLP_MODEL = "hu_core_news_md" # Nagyobb, de potenciálisan pontosabb magyar modell
 
 # spaCy feldolgozás batch mérete (nlp.pipe)
 # Nagyobb érték gyorsabb lehet, de több memóriát használ.
 # Kísérletezz ezzel az értékkel a rendszeredhez igazítva.
-PROCESSING_BATCH_SIZE = 512 # Kezdő érték
+BATCH_SIZE = 256 # Default batch size
 
 # spaCy párhuzamos feldolgozási szálak száma (n_process az nlp.pipe-ban)
 # -1: Az összes elérhető CPU mag használata (nagyon memóriaigényes lehet!)
