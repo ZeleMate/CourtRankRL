@@ -2,39 +2,34 @@
 sentence-transformers
 transformers
 torch
-openai # Added for embeddings
-# Note: If you are using a GPU, install the appropriate version of torch. For example:
-# pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu118
-# For CPU only, you can use the following command:
-# pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cpu
+openai
+tiktoken # For token counting with OpenAI
 
 # Vector Search
-faiss-cpu # or faiss-gpu if you have CUDA installed and configured
+faiss-cpu
 
-# Graph Database (Example: Neo4j)
-neo4j
+# Graph Handling
+networkx # Added from README
 
 # Data Handling
-numpy # Removed <2.0 pin
+numpy
 pandas
-pyarrow # Added for Parquet caching
+pyarrow
+scikit-learn # Added from README
 
 # Reinforcement Learning
 gym
+# HuggingFace TRL (Optional, mentioned in README)
 
-# Web UI
-Flask # Replaced streamlit with Flask
+# Visualization
+matplotlib # Added from README
+seaborn # Added from README
 
 # Utilities
 tqdm
+python-dotenv # Added from README
+backoff # Added from README for API retries
 
-# Optional Document Loaders (Install if you need to process .docx or .rtf)
-# python-docx
-# striprtf
-
-# Note: If you want to use the Neo4j graph database, install the Neo4j Python driver
-
-striprtf # For RTF file handling
+# Optional Document Loaders
 python-docx # For DOCX file handling
-unidecode # For removing accents from text
-tiktoken
+striprtf # For RTF file handling

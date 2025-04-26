@@ -15,9 +15,9 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from src.models.embedding import load_embedding_model
 from src.data_loader.legal_docs import load_documents_from_folder
 from src.search.semantic_search import SemanticSearch
-from src.rl.agent import RLAgent
-from src.rl.environment import RankingEnv # Needed for state construction logic
-from src.rl.reward import load_expert_evaluations, compute_reward_from_evaluations, get_relevance_scores_for_ranking, calculate_ndcg
+from src.reinforcement_learning.agent import RLAgent
+from src.reinforcement_learning.environment import RankingEnv # Needed for state construction logic
+from src.reinforcement_learning.reward_models.reward import load_expert_evaluations, compute_reward_from_evaluations, get_relevance_scores_for_ranking, calculate_ndcg
 from configs import config
 from tqdm import tqdm # Progress bar
 

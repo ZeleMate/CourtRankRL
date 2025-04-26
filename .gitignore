@@ -38,4 +38,4 @@ data/processed/*
 !data/processed/.gitkeep
 
 # Raw data directory
-BHGY-k/
+data/
