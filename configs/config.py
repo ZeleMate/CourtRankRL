@@ -13,6 +13,7 @@ DATA_DIR = PROJECT_ROOT / "data" # Corrected path from "BHGY-k"
 OUT_DIR = PROJECT_ROOT / "processed_data"
 RAW_DATA_CSV_FILENAME = "raw_data_for_eda.csv"
 PROCESSED_DATA_PARQUET_FILENAME = "processed_documents_with_embeddings.parquet"
+CLEANED_DATA_CSV_FILENAME = "cleaned_data_for_embedding.csv" # Új fájlnév a tisztított adatoknak
 
 # Ensure processed_data directory exists
 OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -20,6 +21,7 @@ OUT_DIR.mkdir(parents=True, exist_ok=True)
 # Teljes útvonalak
 RAW_CSV_DATA_PATH = OUT_DIR / RAW_DATA_CSV_FILENAME
 PROCESSED_PARQUET_DATA_PATH = OUT_DIR / PROCESSED_DATA_PARQUET_FILENAME
+CLEANED_CSV_DATA_PATH = OUT_DIR / CLEANED_DATA_CSV_FILENAME # Új elérési út a tisztított CSV-hez
 
 # ------------------------------------------------------------------
 # Adatfeldolgozási beállítások (preprocess_documents.py)
@@ -100,5 +102,6 @@ print(f"Konfiguráció betöltve. Projekt gyökér: {PROJECT_ROOT}")
 print(f"Adat könyvtár: {DATA_DIR}")
 print(f"Kimeneti könyvtár: {OUT_DIR}")
 print(f"Nyers adat CSV: {RAW_CSV_DATA_PATH}")
+print(f"Tisztított adat CSV: {CLEANED_CSV_DATA_PATH}") # Kiíratás hozzáadása
 print(f"Feldolgozott Parquet: {PROCESSED_PARQUET_DATA_PATH}")
 print(f"OpenAI Embedding modell: {OPENAI_EMBEDDING_MODEL}")
