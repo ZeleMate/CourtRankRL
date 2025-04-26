@@ -2,7 +2,7 @@ Graph-Augmented Semantic Search for Court Decision Retrieval
 
 Projekt leírása
 ---------------
-Ez a projekt célja egy intelligens keresőrendszer fejlesztése, amely bírósági határozatok szemantikai alapú visszakeresését támogatja.
+A projekt célja egy intelligens keresőrendszer fejlesztése, amely bírósági határozatok szemantikai alapú visszakeresését támogatja.
 A rendszer transzformer-alapú szövegembeddingeket alkalmaz a bírósági dokumentumok mély jelentésbeli reprezentációjához,
 és a dokumentumok közötti kapcsolatok feltérképezésére gráfalapú modellezést használ.
 A találatok rangsorolását megerősítéses tanulási (Reinforcement Learning) technikával finomítja.
