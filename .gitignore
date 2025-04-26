@@ -31,11 +31,8 @@ __pycache__/
 *.swp
 *.swo
 
-# Data files
-data/raw/*
-!data/raw/.gitkeep
-data/processed/*
-!data/processed/.gitkeep
-
 # Raw data directory
 data/
+
+# Ignore processed data folder
+processed_data/
