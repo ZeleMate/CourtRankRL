@@ -2,7 +2,11 @@
 sentence-transformers
 transformers
 torch
-spacy>=3.0.0,<4.0.0
+spacy # For NLP tasks
+# Note: If you are using a GPU, install the appropriate version of torch. For example:
+# pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu118
+# For CPU only, you can use the following command:
+# pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cpu
 # Note: After installing spacy, download a language model, e.g.:
 # python -m spacy download hu_core_news_lg
 

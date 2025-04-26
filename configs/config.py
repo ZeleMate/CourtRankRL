@@ -20,23 +20,30 @@ OUT_DIR = PROJECT_ROOT / "processed_data"
 OUT_FILENAME = "processed_documents.csv" # Kimeneti fájlnév (tömörítés nélkül)
 
 # ------------------------------------------------------------------
+# Adatfeldolgozási beállítások
+# ------------------------------------------------------------------
+# Chunk méret a dokumentumok feldolgozásához (sorok száma)
+# A preprocess_documents.py szkript használja a memóriakezeléshez.
+DATA_PROCESSING_CHUNK_SIZE = 500 # Feldolgozási egység mérete
+
+# ------------------------------------------------------------------
 # NLP Feldolgozási beállítások
 # ------------------------------------------------------------------
 # Használt spaCy modell neve
 # Győződj meg róla, hogy telepítve van: python -m spacy download hu_core_news_lg
-NLP_MODEL = "hu_core_news_md" # Nagyobb, de potenciálisan pontosabb magyar modell
+NLP_MODEL = "hu_core_news_lg" # Nagyobb, de potenciálisan pontosabb magyar modell
 
 # spaCy feldolgozás batch mérete (nlp.pipe)
 # Nagyobb érték gyorsabb lehet, de több memóriát használ.
 # Kísérletezz ezzel az értékkel a rendszeredhez igazítva.
-BATCH_SIZE = 256 # Default batch size
+BATCH_SIZE = 32 # Default batch size
 
 # spaCy párhuzamos feldolgozási szálak száma (n_process az nlp.pipe-ban)
 # -1: Az összes elérhető CPU mag használata (nagyon memóriaigényes lehet!)
 # 1: Nincs párhuzamosítás (legkisebb memóriahasználat)
 # 2, 3, 4, ...: Megadott számú processz használata (kompromisszum sebesség és memória között)
 # Kezdd 1-gyel vagy 2-vel 16GB RAM esetén, és figyeld a memóriahasználatot.
-SPACY_N_PROCESS = 2 # Ajánlott kezdőérték 16GB RAM-hoz
+SPACY_N_PROCESS = 1 # Ajánlott kezdőérték 16GB RAM-hoz
 
 # Tiltsa le a szükségtelen spaCy komponenseket a memória csökkentése érdekében?
 # Ha csak lemmatizálásra és/vagy entitásfelismerésre van szükség, a parser letiltható.
@@ -102,9 +109,9 @@ print(f"spaCy modell: {NLP_MODEL}, Párhuzamos processzek: {SPACY_N_PROCESS}")
 # Model configuration
 # Choose appropriate model like 'SZTAKI-HLT/hubert-base-cc', 'sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2', or a specific LegalBERT
 # Using OpenAI's API
-EMBEDDING_MODEL_NAME = "openai/text-embedding-3-large"
+EMBEDDING_MODEL_NAME = "openai/text-embedding-3-small"
 # Update dimension based on the chosen model
-EMBEDDING_DIMENSION = 3072  # Dimension for text-embedding-3-large
+EMBEDDING_DIMENSION = 1536  # Dimension for text-embedding-3-small
 
 # OpenAI API Key - IMPORTANT: Set this as an environment variable 'OPENAI_API_KEY'
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "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") # Example, better to just read from env
