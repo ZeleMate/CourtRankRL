@@ -9,10 +9,13 @@ import logging # Added for logging level
 # Alapvető elérési utak
 # ------------------------------------------------------------------
 PROJECT_ROOT = Path(__file__).parent.parent
-DATA_DIR = PROJECT_ROOT / "BHGY-k"
+DATA_DIR = PROJECT_ROOT / "data" # Corrected path from "BHGY-k"
 OUT_DIR = PROJECT_ROOT / "processed_data"
 RAW_DATA_CSV_FILENAME = "raw_data_for_eda.csv"
 PROCESSED_DATA_PARQUET_FILENAME = "processed_documents_with_embeddings.parquet"
+
+# Ensure processed_data directory exists
+OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # Teljes útvonalak
 RAW_CSV_DATA_PATH = OUT_DIR / RAW_DATA_CSV_FILENAME

@@ -3,8 +3,22 @@ import json
 import re
 from pathlib import Path
 from tqdm import tqdm
+import sys
+import os
 
-root_dir = Path('/Users/zelenyianszkimate/Documents/Szakdolgozat/BHGY-k')
+# Calculate the project root directory
+project_root = Path(__file__).resolve().parent.parent
+# Add the project root to the Python path
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
+# Konfiguráció importálása
+from configs import config
+
+# Use the DATA_DIR from the config file
+root_dir = config.DATA_DIR
+# root_dir = project_root / 'data' # Original calculation
+# root_dir = Path('/Users/zelenyianszkimate/Documents/Szakdolgozat/BHGY-k') # Original hardcoded path
 paths = list(root_dir.rglob('*'))
 records = []
 
@@ -54,7 +68,7 @@ for path in tqdm(paths, desc="Fájlok feldolgozása"):
         records.append(record)
 
 df = pd.DataFrame(records)
-out_path = Path('/Users/zelenyianszkimate/Documents/Szakdolgozat/processed_data/raw_data_for_eda.csv')
+out_path = config.RAW_CSV_DATA_PATH
 out_path.parent.mkdir(parents=True, exist_ok=True)
-df.to_csv(out_path, index=False, encoding='utf-8')
+df.to_csv(out_path, index=False, encoding=config.CSV_ENCODING)
 print(f'Raw EDA adat elmentve: {out_path}')
