@@ -2,13 +2,11 @@
 sentence-transformers
 transformers
 torch
-spacy # For NLP tasks
+openai # Added for embeddings
 # Note: If you are using a GPU, install the appropriate version of torch. For example:
 # pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu118
 # For CPU only, you can use the following command:
 # pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cpu
-# Note: After installing spacy, download a language model, e.g.:
-# python -m spacy download hu_core_news_lg
 
 # Vector Search
 faiss-cpu # or faiss-gpu if you have CUDA installed and configured
@@ -17,7 +15,7 @@ faiss-cpu # or faiss-gpu if you have CUDA installed and configured
 neo4j
 
 # Data Handling
-numpy
+numpy # Removed <2.0 pin
 pandas
 pyarrow # Added for Parquet caching
 
@@ -39,3 +37,4 @@ tqdm
 striprtf # For RTF file handling
 python-docx # For DOCX file handling
 unidecode # For removing accents from text
+tiktoken
