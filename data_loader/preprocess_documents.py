@@ -15,18 +15,23 @@ if str(project_root) not in sys.path:
 # Konfiguráció importálása
 from configs import config
 
-# Use the DATA_DIR from the config file
-root_dir = config.DATA_DIR
-# root_dir = project_root / 'data' # Original calculation
+# Use the project's data directory instead of a hardcoded path
+root_dir = project_root / 'data'
 # root_dir = Path('/Users/zelenyianszkimate/Documents/Szakdolgozat/BHGY-k') # Original hardcoded path
 paths = list(root_dir.rglob('*'))
 records = []
 
 for path in tqdm(paths, desc="Fájlok feldolgozása"):
     if path.suffix.lower() in ('.rtf', '.docx'):
-        base = path.stem
+        base = path.stem # Kiterjesztés nélküli név, pl. '1400-P_20011_2022_60'
         text_path = path
-        json_path = path.with_suffix('.json')
+
+        # ÚJ LOGIKA (kép alapján): JSON név = <base_name>.RTF_OBH.JSON
+        json_filename = base + '.RTF_OBH.JSON' # Pl. '1400-P_20011_2022_60.RTF_OBH.JSON'
+        json_path = path.with_name(json_filename)
+
+        print(f"DEBUG: Document found: {path}")
+        print(f"DEBUG: Expecting JSON based on pattern (<base_name>.RTF_OBH.JSON): {json_path}")
 
         # Szöveg kinyerése egyszerűen
         if text_path.suffix.lower() == '.rtf':
@@ -40,34 +45,125 @@ for path in tqdm(paths, desc="Fájlok feldolgozása"):
 
         text = re.sub(r'\s+', ' ', text).strip()
 
-        # Metaadat betöltés
-        metadata = {}
+        # Metaadat betöltés és specifikus mezők kinyerése
+        extracted_metadata = {}
+        first_related_case = {}  # Initialize dict for first related case info
+
+        # Csak akkor próbáljuk megnyitni, ha létezik a várt JSON fájl
         if json_path.exists():
+            print(f"DEBUG: SUCCESS - Found JSON file: {json_path}") # Debug
             try:
                 with open(json_path, 'r', encoding='utf-8') as jf:
-                    metadata = json.load(jf)
-            except:
-                pass
+                    metadata_dict = json.load(jf)
+                    print(f"DEBUG: Loaded JSON for {json_path}. Top-level keys: {metadata_dict.keys()}") # DEBUG line added
 
-        # Kontextus kinyerése az elérési útból
+                    if 'List' in metadata_dict and isinstance(metadata_dict['List'], list) and len(metadata_dict['List']) > 0:
+                        print(f"DEBUG: Found 'List' with {len(metadata_dict['List'])} items.") # DEBUG line added
+                        # Extract all key-value pairs from the first item in the List
+                        extracted_metadata = metadata_dict['List'][0]
+                        print(f"DEBUG: Extracted keys from List[0]: {extracted_metadata.keys()}") # DEBUG line added
+
+                        # Extract info from the first related case, if available
+                        if 'KapcsolodoHatarozatok' in extracted_metadata and isinstance(extracted_metadata['KapcsolodoHatarozatok'], list) and len(extracted_metadata['KapcsolodoHatarozatok']) > 0:
+                            # Check if the first item is a dictionary before accessing keys
+                            if isinstance(extracted_metadata['KapcsolodoHatarozatok'][0], dict):
+                                first_related_case = extracted_metadata['KapcsolodoHatarozatok'][0]
+                            else:
+                                # Handle cases where items might not be dicts (optional logging/warning)
+                                print(f"Warning: First item in KapcsolodoHatarozatok is not a dictionary for {json_path}")
+
+                        # Ensure Jogszabalyhelyek is handled correctly if it's complex (e.g., list or dict)
+                        # For simplicity, converting to string if it's not already a simple type
+                        if 'Jogszabalyhelyek' in extracted_metadata and not isinstance(extracted_metadata['Jogszabalyhelyek'], (str, int, float, bool)):
+                            extracted_metadata['Jogszabalyhelyek'] = str(extracted_metadata['Jogszabalyhelyek'])
+                        # Convert KapcsolodoHatarozatok to JSON string *after* potentially extracting the first item
+                        if 'KapcsolodoHatarozatok' in extracted_metadata and not isinstance(extracted_metadata['KapcsolodoHatarozatok'], (str, int, float, bool)):
+                            extracted_metadata['KapcsolodoHatarozatok'] = json.dumps(extracted_metadata['KapcsolodoHatarozatok'], ensure_ascii=False)  # Store as JSON string
+
+                    else: # DEBUG block added
+                        print(f"DEBUG: 'List' key not found, is not a list, or is empty in {json_path}.")
+                        if 'List' in metadata_dict:
+                            print(f"DEBUG: Type of 'List': {type(metadata_dict['List'])}")
+                            if isinstance(metadata_dict['List'], list):
+                                print(f"DEBUG: Length of 'List': {len(metadata_dict['List'])}")
+
+            except json.JSONDecodeError:
+                print(f"Warning: Could not decode JSON for {json_path}")
+            except Exception as e:
+                print(f"Warning: Error processing JSON {json_path}: {e}")
+        else:
+             print(f"DEBUG: FAILURE - JSON file not found at expected path: {json_path}") # Debug, ha nem található
+             # Kiegészítő debug: Listázzuk ki a mappa tartalmát, hátha segít
+             try:
+                 parent_dir_contents = [f.name for f in path.parent.iterdir()]
+                 print(f"DEBUG: Contents of directory {path.parent}: {parent_dir_contents}")
+             except Exception as list_e:
+                 print(f"DEBUG: Could not list contents of directory {path.parent}: {list_e}")
+
+        # Kontextus kinyerése az elérési útból (fallback for birosag)
+        birosag_from_path = None
         try:
-            rel_parts = path.relative_to(root_dir).parts
-            birosag = rel_parts[0] if len(rel_parts) > 0 else None
-            jogterulet = rel_parts[1] if len(rel_parts) > 1 else None
-        except ValueError:
-            birosag = None
-            jogterulet = None
+            # Ensure root_dir is absolute for relative_to
+            abs_root_dir = root_dir.resolve()
+            abs_path = path.resolve()
+            if abs_path.is_relative_to(abs_root_dir): # Check if path is under root_dir
+                 rel_parts = abs_path.relative_to(abs_root_dir).parts
+                 if len(rel_parts) > 1: # Need at least root/subdir/file structure
+                    birosag_from_path = rel_parts[0]
+            else:
+                 print(f"Warning: Path {path} is not relative to root {root_dir}. Cannot determine birosag from path.")
+        except ValueError as ve:
+            # This might happen if path is not under root_dir, though is_relative_to should prevent it.
+            print(f"Warning: ValueError calculating relative path for {path} from {root_dir}: {ve}")
+            pass  # birosag_from_path remains None
+        except Exception as e_path:
+             print(f"Warning: Unexpected error getting birosag from path {path}: {e_path}")
+             pass # birosag_from_path remains None
 
+        # Rekord összeállítása
         record = {
-            'doc_id': base,
             'text': text,
-            'birosag': birosag,
-            'jogterulet': jogterulet,
-            'metadata': json.dumps(metadata, ensure_ascii=False)
+            # Add all extracted metadata fields (includes EgyediAzonosito, KapcsolodoHatarozatok as string, etc.)
+            **extracted_metadata,
+            # Add specific fields from the first related case separately
+            'FirstKapcsolodoUgyszam': first_related_case.get('KapcsolodoUgyszam'),
+            'FirstKapcsolodoBirosag': first_related_case.get('KapcsolodoBirosag')
         }
+
+        # Set doc_id: prioritize Azonosito from JSON, fallback to filename base
+        record['doc_id'] = extracted_metadata.get('Azonosito', base)
+
+        # Set birosag: prioritize MeghozoBirosag from JSON, fallback to path component
+        record['birosag'] = extracted_metadata.get('MeghozoBirosag', birosag_from_path)
+
+        # Remove potentially problematic fields if they exist but were not handled above
+        record.pop('Szoveg', None)
+        record.pop('RezumeSzovegKornyezet', None)
+        record.pop('DownloadLink', None)  # Remove DownloadLink if present
+        # Remove the original full metadata dict if it was accidentally added by **extracted_metadata
+        record.pop('metadata', None)
+
         records.append(record)
 
 df = pd.DataFrame(records)
+# Ensure specific important columns exist, even if empty in some records
+# Added EgyediAzonosito, FirstKapcsolodoUgyszam, FirstKapcsolodoBirosag
+for col in ['doc_id', 'text', 'birosag', 'JogTerulet', 'Azonosito', 'MeghozoBirosag', 'EgyediAzonosito', 'FirstKapcsolodoUgyszam', 'FirstKapcsolodoBirosag', 'KapcsolodoHatarozatok']:
+    if col not in df.columns:
+        df[col] = None
+
+# Reorder columns for better readability (optional)
+# Added new columns to core_cols
+core_cols = ['doc_id', 'text', 'birosag', 'JogTerulet', 'Azonosito', 'MeghozoBirosag', 'EgyediAzonosito', 'HatarozatEve', 'FirstKapcsolodoUgyszam', 'FirstKapcsolodoBirosag', 'KapcsolodoHatarozatok']
+other_cols = [col for col in df.columns if col not in core_cols]
+# Handle potential missing HatarozatEve if it wasn't in JSON
+if 'HatarozatEve' not in df.columns:
+    core_cols.remove('HatarozatEve')  # Remove from core if it doesn't exist at all
+    if 'HatarozatEve' in other_cols:
+        other_cols.remove('HatarozatEve')  # Ensure it's not in others either
+
+df = df[core_cols + other_cols]
+
 out_path = config.RAW_CSV_DATA_PATH
 out_path.parent.mkdir(parents=True, exist_ok=True)
 df.to_csv(out_path, index=False, encoding=config.CSV_ENCODING)
