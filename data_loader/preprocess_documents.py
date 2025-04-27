@@ -17,7 +17,6 @@ from configs import config
 
 # Use the project's data directory instead of a hardcoded path
 root_dir = project_root / 'data'
-# root_dir = Path('/Users/zelenyianszkimate/Documents/Szakdolgozat/BHGY-k') # Original hardcoded path
 paths = list(root_dir.rglob('*'))
 records = []
 
@@ -29,9 +28,6 @@ for path in tqdm(paths, desc="Fájlok feldolgozása"):
         # ÚJ LOGIKA (kép alapján): JSON név = <base_name>.RTF_OBH.JSON
         json_filename = base + '.RTF_OBH.JSON' # Pl. '1400-P_20011_2022_60.RTF_OBH.JSON'
         json_path = path.with_name(json_filename)
-
-        print(f"DEBUG: Document found: {path}")
-        print(f"DEBUG: Expecting JSON based on pattern (<base_name>.RTF_OBH.JSON): {json_path}")
 
         # Szöveg kinyerése egyszerűen
         if text_path.suffix.lower() == '.rtf':
@@ -47,58 +43,51 @@ for path in tqdm(paths, desc="Fájlok feldolgozása"):
 
         # Metaadat betöltés és specifikus mezők kinyerése
         extracted_metadata = {}
-        first_related_case = {}  # Initialize dict for first related case info
+        # Initialize lists for all related case info
+        all_related_ugyszam = []
+        all_related_birosag = []
 
         # Csak akkor próbáljuk megnyitni, ha létezik a várt JSON fájl
         if json_path.exists():
-            print(f"DEBUG: SUCCESS - Found JSON file: {json_path}") # Debug
             try:
                 with open(json_path, 'r', encoding='utf-8') as jf:
                     metadata_dict = json.load(jf)
-                    print(f"DEBUG: Loaded JSON for {json_path}. Top-level keys: {metadata_dict.keys()}") # DEBUG line added
 
                     if 'List' in metadata_dict and isinstance(metadata_dict['List'], list) and len(metadata_dict['List']) > 0:
-                        print(f"DEBUG: Found 'List' with {len(metadata_dict['List'])} items.") # DEBUG line added
                         # Extract all key-value pairs from the first item in the List
                         extracted_metadata = metadata_dict['List'][0]
-                        print(f"DEBUG: Extracted keys from List[0]: {extracted_metadata.keys()}") # DEBUG line added
 
-                        # Extract info from the first related case, if available
-                        if 'KapcsolodoHatarozatok' in extracted_metadata and isinstance(extracted_metadata['KapcsolodoHatarozatok'], list) and len(extracted_metadata['KapcsolodoHatarozatok']) > 0:
-                            # Check if the first item is a dictionary before accessing keys
-                            if isinstance(extracted_metadata['KapcsolodoHatarozatok'][0], dict):
-                                first_related_case = extracted_metadata['KapcsolodoHatarozatok'][0]
-                            else:
-                                # Handle cases where items might not be dicts (optional logging/warning)
-                                print(f"Warning: First item in KapcsolodoHatarozatok is not a dictionary for {json_path}")
+                        # Extract info from ALL related cases, if available
+                        if 'KapcsolodoHatarozatok' in extracted_metadata and isinstance(extracted_metadata['KapcsolodoHatarozatok'], list):
+                            for related_case in extracted_metadata['KapcsolodoHatarozatok']:
+                                # Check if the item is a dictionary before accessing keys
+                                if isinstance(related_case, dict):
+                                    all_related_ugyszam.append(related_case.get('KapcsolodoUgyszam'))
+                                    all_related_birosag.append(related_case.get('KapcsolodoBirosag'))
+                                else:
+                                    # Handle cases where items might not be dicts (optional logging/warning)
+                                    print(f"Warning: Item in KapcsolodoHatarozatok is not a dictionary for {json_path}")
+                                    all_related_ugyszam.append(None) # Add placeholder if needed
+                                    all_related_birosag.append(None) # Add placeholder if needed
 
                         # Ensure Jogszabalyhelyek is handled correctly if it's complex (e.g., list or dict)
                         # For simplicity, converting to string if it's not already a simple type
                         if 'Jogszabalyhelyek' in extracted_metadata and not isinstance(extracted_metadata['Jogszabalyhelyek'], (str, int, float, bool)):
                             extracted_metadata['Jogszabalyhelyek'] = str(extracted_metadata['Jogszabalyhelyek'])
-                        # Convert KapcsolodoHatarozatok to JSON string *after* potentially extracting the first item
+                        # Convert KapcsolodoHatarozatok to JSON string *after* extracting all ugyszam/birosag
                         if 'KapcsolodoHatarozatok' in extracted_metadata and not isinstance(extracted_metadata['KapcsolodoHatarozatok'], (str, int, float, bool)):
                             extracted_metadata['KapcsolodoHatarozatok'] = json.dumps(extracted_metadata['KapcsolodoHatarozatok'], ensure_ascii=False)  # Store as JSON string
-
-                    else: # DEBUG block added
-                        print(f"DEBUG: 'List' key not found, is not a list, or is empty in {json_path}.")
-                        if 'List' in metadata_dict:
-                            print(f"DEBUG: Type of 'List': {type(metadata_dict['List'])}")
-                            if isinstance(metadata_dict['List'], list):
-                                print(f"DEBUG: Length of 'List': {len(metadata_dict['List'])}")
 
             except json.JSONDecodeError:
                 print(f"Warning: Could not decode JSON for {json_path}")
             except Exception as e:
                 print(f"Warning: Error processing JSON {json_path}: {e}")
         else:
-             print(f"DEBUG: FAILURE - JSON file not found at expected path: {json_path}") # Debug, ha nem található
              # Kiegészítő debug: Listázzuk ki a mappa tartalmát, hátha segít
              try:
                  parent_dir_contents = [f.name for f in path.parent.iterdir()]
-                 print(f"DEBUG: Contents of directory {path.parent}: {parent_dir_contents}")
              except Exception as list_e:
-                 print(f"DEBUG: Could not list contents of directory {path.parent}: {list_e}")
+                 pass # Keep pass if the except block becomes empty
 
         # Kontextus kinyerése az elérési útból (fallback for birosag)
         birosag_from_path = None
@@ -125,9 +114,9 @@ for path in tqdm(paths, desc="Fájlok feldolgozása"):
             'text': text,
             # Add all extracted metadata fields (includes EgyediAzonosito, KapcsolodoHatarozatok as string, etc.)
             **extracted_metadata,
-            # Add specific fields from the first related case separately
-            'FirstKapcsolodoUgyszam': first_related_case.get('KapcsolodoUgyszam'),
-            'FirstKapcsolodoBirosag': first_related_case.get('KapcsolodoBirosag')
+            # Add all related case info as JSON strings
+            'AllKapcsolodoUgyszam': json.dumps(all_related_ugyszam, ensure_ascii=False) if all_related_ugyszam else None,
+            'AllKapcsolodoBirosag': json.dumps(all_related_birosag, ensure_ascii=False) if all_related_birosag else None,
         }
 
         # Set doc_id: prioritize Azonosito from JSON, fallback to filename base
@@ -147,20 +136,22 @@ for path in tqdm(paths, desc="Fájlok feldolgozása"):
 
 df = pd.DataFrame(records)
 # Ensure specific important columns exist, even if empty in some records
-# Added EgyediAzonosito, FirstKapcsolodoUgyszam, FirstKapcsolodoBirosag
-for col in ['doc_id', 'text', 'birosag', 'JogTerulet', 'Azonosito', 'MeghozoBirosag', 'EgyediAzonosito', 'FirstKapcsolodoUgyszam', 'FirstKapcsolodoBirosag', 'KapcsolodoHatarozatok']:
+# Updated to include AllKapcsolodoUgyszam and AllKapcsolodoBirosag
+for col in ['doc_id', 'text', 'birosag', 'JogTerulet', 'Azonosito', 'MeghozoBirosag', 'EgyediAzonosito', 'AllKapcsolodoUgyszam', 'AllKapcsolodoBirosag', 'KapcsolodoHatarozatok']:
     if col not in df.columns:
         df[col] = None
 
 # Reorder columns for better readability (optional)
-# Added new columns to core_cols
-core_cols = ['doc_id', 'text', 'birosag', 'JogTerulet', 'Azonosito', 'MeghozoBirosag', 'EgyediAzonosito', 'HatarozatEve', 'FirstKapcsolodoUgyszam', 'FirstKapcsolodoBirosag', 'KapcsolodoHatarozatok']
+# Updated core_cols with new columns
+core_cols = ['doc_id', 'text', 'birosag', 'JogTerulet', 'Azonosito', 'MeghozoBirosag', 'EgyediAzonosito', 'HatarozatEve', 'AllKapcsolodoUgyszam', 'AllKapcsolodoBirosag', 'KapcsolodoHatarozatok']
 other_cols = [col for col in df.columns if col not in core_cols]
 # Handle potential missing HatarozatEve if it wasn't in JSON
 if 'HatarozatEve' not in df.columns:
-    core_cols.remove('HatarozatEve')  # Remove from core if it doesn't exist at all
+    # Check if HatarozatEve exists in other_cols before removing from core_cols
+    if 'HatarozatEve' in core_cols:
+        core_cols.remove('HatarozatEve')
     if 'HatarozatEve' in other_cols:
-        other_cols.remove('HatarozatEve')  # Ensure it's not in others either
+        other_cols.remove('HatarozatEve') # Ensure it's not in others either
 
 df = df[core_cols + other_cols]
 
