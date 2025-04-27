@@ -4,6 +4,9 @@ Configuration settings for the project.
 import os
 from pathlib import Path
 import logging # Added for logging level
+from dotenv import load_dotenv # Import load_dotenv
+
+load_dotenv() # Load environment variables from .env file
 
 # ------------------------------------------------------------------
 # Alapvető elérési utak
@@ -36,7 +39,8 @@ SUPPORTED_TEXT_EXTENSIONS = ['.docx', '.rtf']
 OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
 OPENAI_EMBEDDING_DIMENSION = 1536
 OPENAI_EMBEDDING_BATCH_SIZE = 100
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "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")
+# Load API key from environment variable
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 # Kimeneti oszlopok a Parquet fájlhoz (generate_embeddings.py)
 EMBEDDING_OUTPUT_COLUMNS = [
@@ -95,8 +99,11 @@ EXPERT_EVAL_PATH = "data/expert_evaluations.csv"
 RL_AGENT_SAVE_PATH = "models/rl_agent.pt"
 
 # Figyelmeztetés, ha az API kulcs nincs beállítva
-if OPENAI_API_KEY == "YOUR_API_KEY_HERE":
-    print("Warning: OPENAI_API_KEY is not set as an environment variable or is using the placeholder value in config.py.")
+if not OPENAI_API_KEY:
+    print("Warning: OPENAI_API_KEY is not set as an environment variable. Please ensure it is defined in your .env file or environment.")
+else:
+    # Optional: Print a confirmation that the key is loaded, but mask the actual key
+    print("OpenAI API Key loaded successfully from environment.")
 
 print(f"Konfiguráció betöltve. Projekt gyökér: {PROJECT_ROOT}")
 print(f"Adat könyvtár: {DATA_DIR}")

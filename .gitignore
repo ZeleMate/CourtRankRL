@@ -1,11 +1,15 @@
 # Virtual Environment
+.venv
 venv/
 env/
-.env/
-.venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
 
 # Python
-__pycache__/
 *.py[cod]
 *$py.class
 *.so
@@ -15,17 +19,20 @@ __pycache__/
 *.egg
 
 # Jupyter Notebook
-.ipynb_checkpoints
+.ipynb_checkpoints/
 
 # Model files
+models/
 *.pkl
 *.model
 *.pt
+*.pth
+*.onnx
 
 # Environment variables
 .env
 
-# IDE files
+# IDE / Editor specific
 .vscode/
 .idea/
 *.swp
@@ -36,3 +43,6 @@ data/
 
 # Ignore processed data folder
 processed_data/
+
+# Logs
+logs/
