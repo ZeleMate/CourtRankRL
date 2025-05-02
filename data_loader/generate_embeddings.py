@@ -33,10 +33,10 @@ PARQUET_ENGINE = config.PARQUET_ENGINE # Add engine setting
 # --- ÚJ: Oszlop definíciók (Frissítve) ---
 # A végső Parquet fájlhoz szükséges oszlopnevek
 FINAL_OUTPUT_COLUMNS = [
-    # 'Azonosito', # Eltávolítva, mert megegyezik a doc_id-val
     'doc_id', # Hozzáadva, ez lesz az azonosító
     'MeghozoBirosag',
     'JogTerulet',
+    'HatarozatEve', # <--- Hozzáadva
     'AllKapcsolodoUgyszam',
     'AllKapcsolodoBirosag',
     'KapcsolodoHatarozatok',

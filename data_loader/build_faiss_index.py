@@ -87,19 +87,19 @@ def create_faiss_index(vectors: np.ndarray) -> Any:
             logging.info("Túl sok vektor, mintavételezés a betanításhoz...")
             sample_indices = np.random.choice(vector_count, 1_000_000, replace=False)
             train_vectors = vectors[sample_indices]
-            index.train(train_vectors)
+            index.train(train_vectors)  # type: ignore
             del sample_indices
             del train_vectors
             gc.collect()
         else:
-            index.train(vectors)
+            index.train(vectors)  # type: ignore
         
         # Keresési paraméter beállítása
         index.nprobe = FAISS_NPROBE
     
     # Adatok hozzáadása az indexhez
     start_time = time.time()
-    index.add(vectors)
+    index.add(vectors)  # type: ignore
     logging.info(f"Indexelés kész, {vector_count} vektor feldolgozva, időtartam: {time.time() - start_time:.2f} mp")
     
     return index
