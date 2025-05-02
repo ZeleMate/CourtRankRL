@@ -36,6 +36,7 @@ FINAL_OUTPUT_COLUMNS = [
     'doc_id', # Hozzáadva, ez lesz az azonosító
     'MeghozoBirosag',
     'JogTerulet',
+    'Jogszabalyhelyek', # <--- Hozzáadva
     'HatarozatEve', # <--- Hozzáadva
     'AllKapcsolodoUgyszam',
     'AllKapcsolodoBirosag',
