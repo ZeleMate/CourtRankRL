@@ -16,7 +16,8 @@ networkx # Added from README
 numpy
 pandas
 pyarrow
-scikit-learn # Added from README
+scikit-learn
+plotly
 
 # Reinforcement Learning
 gym

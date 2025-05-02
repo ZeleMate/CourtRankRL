@@ -18,6 +18,15 @@ RAW_DATA_CSV_FILENAME = "raw_data_for_eda.csv"
 PROCESSED_DATA_PARQUET_FILENAME = "processed_documents_with_embeddings.parquet"
 CLEANED_DATA_CSV_FILENAME = "cleaned_data_for_embedding.csv" # Új fájlnév a tisztított adatoknak
 
+# ------------------------------------------------------------------
+# Gráf kimeneti fájlok elérési útjai
+# ------------------------------------------------------------------
+GRAPH_OUTPUT_GML_PATH = "processed_data/graph_data/graph.gml"
+GRAPH_OUTPUT_JSON_PATH = "processed_data/graph_data/graph.json"
+GRAPH_OUTPUT_GRAPHML_PATH = "processed_data/graph_data/graph.graphml" # Új GraphML formátum
+# Relatív útvonal a metaadat fájlhoz, a többi gráf fájlhoz hasonlóan
+GRAPH_METADATA_PATH = "processed_data/graph_data/graph_metadata.json"
+
 # Ensure processed_data directory exists
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 

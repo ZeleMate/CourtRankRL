@@ -24,8 +24,9 @@ except ImportError:
     # Define minimal fallbacks
     class MockConfig:
         PROCESSED_PARQUET_DATA_PATH = 'processed_data/processed_documents.parquet'
-        GRAPH_OUTPUT_JSON_PATH = 'processed_data/output_graph.json'
-        GRAPH_METADATA_PATH = 'processed_data/output_graph_metadata.json'
+        GRAPH_OUTPUT_JSON_PATH = 'processed_data/graph_data/graph.json'
+        GRAPH_OUTPUT_GRAPHML_PATH = 'processed_data/graph_data/graph.graphml'
+        GRAPH_METADATA_PATH = 'processed_data/graph_data/graph_metadata.json'
     config = MockConfig()
 
 # --- Helper Functions ---
@@ -121,16 +122,27 @@ def build_graph(df, stop_jogszabalyok):
     logging.info(f"Graph construction finished. Nodes: {G.number_of_nodes()}, Edges: {G.number_of_edges()}")
     return G
 
-def save_graph(G, json_path):
-    """Saves the graph in JSON format."""
+def save_graph(G, json_path, graphml_path):
+    """Saves the graph in both JSON and GraphML formats."""
+    # Save JSON format
     try:
         logging.info(f"Saving graph to {json_path} (JSON format)...")
-        graph_data = nx.node_link_data(G) # Default link key is 'links'
+        graph_data = nx.node_link_data(G)
+        os.makedirs(os.path.dirname(json_path), exist_ok=True)
         with open(json_path, 'w', encoding='utf-8') as f:
             json.dump(graph_data, f, ensure_ascii=False, indent=4)
-        logging.info("Graph saved successfully.")
+        logging.info("Graph saved successfully in JSON format.")
     except Exception as e:
         logging.error(f"Failed to save graph to JSON ({json_path}): {e}")
+
+    # Save GraphML format
+    try:
+        logging.info(f"Saving graph to {graphml_path} (GraphML format)...")
+        os.makedirs(os.path.dirname(graphml_path), exist_ok=True)
+        nx.write_graphml(G, graphml_path)
+        logging.info("Graph saved successfully in GraphML format.")
+    except Exception as e:
+        logging.error(f"Failed to save graph to GraphML ({graphml_path}): {e}")
 
 def save_graph_metadata(G, stop_jogszabalyok_len, output_path):
     """Saves metadata about the generated graph to a JSON file."""
@@ -146,6 +158,7 @@ def save_graph_metadata(G, stop_jogszabalyok_len, output_path):
             "relation_types": sorted(list(relation_types))
         }
 
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
         with open(output_path, 'w', encoding='utf-8') as f:
             json.dump(metadata, f, ensure_ascii=False, indent=4)
         logging.info("Graph metadata saved.")
@@ -187,13 +200,19 @@ def parse_args():
     parser.add_argument(
         "--output-json",
         type=str,
-        default=getattr(config, 'GRAPH_OUTPUT_JSON_PATH', 'processed_data/output_graph.json'),
+        default=getattr(config, 'GRAPH_OUTPUT_JSON_PATH', 'processed_data/graph_data/graph.json'),
         help="Path to save the output graph in JSON format"
+    )
+    parser.add_argument(
+        "--output-graphml",
+        type=str,
+        default=getattr(config, 'GRAPH_OUTPUT_GRAPHML_PATH', 'processed_data/graph_data/graph.graphml'),
+        help="Path to save the output graph in GraphML format"
     )
     parser.add_argument(
         "--output-metadata",
         type=str,
-        default=getattr(config, 'GRAPH_METADATA_PATH', 'processed_data/output_graph_metadata.json'),
+        default=getattr(config, 'GRAPH_METADATA_PATH', 'processed_data/graph_data/graph_metadata.json'),
         help="Path to save the graph metadata JSON"
     )
     parser.add_argument(
@@ -235,7 +254,7 @@ def main():
     G = build_graph(df, stop_jogszabalyok)
 
     # Save outputs
-    save_graph(G, args.output_json)
+    save_graph(G, args.output_json, args.output_graphml)
     save_graph_metadata(G, len(stop_jogszabalyok), args.output_metadata)
     logging.info("Graph building process finished.")
 
