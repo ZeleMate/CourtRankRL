@@ -7,6 +7,7 @@ tiktoken # For token counting with OpenAI
 
 # Vector Search
 faiss-cpu
+faiss-gpu # Optional, for GPU support
 
 # Graph Handling
 networkx # Added from README
