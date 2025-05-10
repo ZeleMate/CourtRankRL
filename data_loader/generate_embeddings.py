@@ -2,33 +2,25 @@
 import pandas as pd
 import logging, os, sys, gc, time
 from tqdm import tqdm
-import pyarrow
-import pyarrow.parquet as pq
-from openai import OpenAI, RateLimitError, APIError
-import tiktoken  # Import tiktoken
+import numpy as np
 
 # Calculate the project root directory
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..')) # Correct: parent of data_loader is the project root
-# Add the project root to the Python path
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-# Konfiguráció importálása
 from configs import config
+from models.embedding import OpenAIEmbeddingModel
 
 # ------------------------------------------------------------------
 # Konfiguráció betöltése
 # ------------------------------------------------------------------
 OUT_DIR = config.OUT_DIR
-IN_CSV_PATH = config.RAW_CSV_DATA_PATH
+IN_CSV_PATH = config.CLEANED_CSV_DATA_PATH
 OUT_PARQUET_PATH = config.PROCESSED_PARQUET_DATA_PATH
-OPENAI_API_KEY = config.OPENAI_API_KEY
-OPENAI_EMBEDDING_MODEL = config.OPENAI_EMBEDDING_MODEL
-OPENAI_EMBEDDING_BATCH_SIZE = config.OPENAI_EMBEDDING_BATCH_SIZE
-OPENAI_EMBEDDING_DIMENSION = config.OPENAI_EMBEDDING_DIMENSION  # Get dimension from config
 CSV_ENCODING = config.CSV_ENCODING
-PARQUET_INDEX = config.PARQUET_INDEX # Add index setting
-PARQUET_ENGINE = config.PARQUET_ENGINE # Add engine setting
+PARQUET_INDEX = config.PARQUET_INDEX
+PARQUET_ENGINE = config.PARQUET_ENGINE
 
 # --- ÚJ: Oszlop definíciók (Frissítve) ---
 # A végső Parquet fájlhoz szükséges oszlopnevek
@@ -36,8 +28,8 @@ FINAL_OUTPUT_COLUMNS = [
     'doc_id', # Hozzáadva, ez lesz az azonosító
     'MeghozoBirosag',
     'JogTerulet',
-    'Jogszabalyhelyek', # <--- Hozzáadva
-    'HatarozatEve', # <--- Hozzáadva
+    'Jogszabalyhelyek',
+    'HatarozatEve',
     'AllKapcsolodoUgyszam',
     'AllKapcsolodoBirosag',
     'KapcsolodoHatarozatok',
@@ -45,7 +37,7 @@ FINAL_OUTPUT_COLUMNS = [
     'embedding'
 ]
 # Azonosító oszlop az egyesítéshez és ellenőrzéshez
-ID_COLUMN = 'doc_id' # Visszaállítva doc_id-ra
+ID_COLUMN = 'doc_id'
 # Szöveg oszlop az embeddinghez
 TEXT_COLUMN = 'text'
 # Nincs szükség átnevezésre, a nevek megegyeznek
@@ -60,125 +52,23 @@ logging.basicConfig(
     format=config.LOGGING_FORMAT
 )
 
-# Initialize OpenAI Client
-if not OPENAI_API_KEY or OPENAI_API_KEY == "YOUR_API_KEY_HERE":
-    logging.error("OpenAI API kulcs nincs megfelelően beállítva. Ellenőrizd a config.py-t vagy a környezeti változókat.")
-    raise SystemExit("Hiba: Hiányzó OpenAI API kulcs.")
-
+# Initialize OpenAIEmbeddingModel
 try:
-    client = OpenAI(api_key=OPENAI_API_KEY)
-    logging.info("OpenAI kliens sikeresen inicializálva.")
+    embedding_model_instance = OpenAIEmbeddingModel()
+    # Az OpenAIEmbeddingModel __init__-je már ellenőrzi az API kulcsot
+    logging.info(f"OpenAIEmbeddingModel sikeresen inicializálva a '{embedding_model_instance.model_name}' modellel.")
+    # Az OPENAI_EMBEDDING_BATCH_SIZE-t az encode hívásakor adjuk át, ha az OpenAIEmbeddingModel támogatja.
+    # Jelenleg az OpenAIEmbeddingModel encode metódusa fix batch_size=32-t használ.
+    # Ezt lehetne paraméterezhetővé tenni az OpenAIEmbeddingModel-ben, és a configból átadni.
+    # Most a config.OPENAI_EMBEDDING_BATCH_SIZE-t használom itt, de ezt az OpenAIEmbeddingModel-nek is tudnia kellene.
+    # Frissítem az OpenAIEmbeddingModel-t, hogy fogadja a batch_size-t.
+    EMBEDDING_BATCH_SIZE_FROM_CONFIG = config.OPENAI_EMBEDDING_BATCH_SIZE
+except ValueError as e: # Ha az API kulcs hiányzik
+    logging.error(f"Hiba az OpenAIEmbeddingModel inicializálásakor: {e}")
+    raise SystemExit(f"Hiba: {e}")
 except Exception as e:
-    logging.error(f"Hiba az OpenAI kliens inicializálásakor: {e}")
-    raise SystemExit("Hiba az OpenAI kliens inicializálásakor.")
-
-# Initialize tiktoken encoder for the specified model
-try:
-    encoding = tiktoken.encoding_for_model(OPENAI_EMBEDDING_MODEL)
-    MAX_TOKENS = 8191  # Use 8191 to be safe
-    logging.info(f"Tiktoken encoder for model '{OPENAI_EMBEDDING_MODEL}' loaded. Max tokens: {MAX_TOKENS}")
-except Exception as e:
-    logging.error(f"Could not load tiktoken encoding for model {OPENAI_EMBEDDING_MODEL}: {e}")
-    encoding = tiktoken.get_encoding("cl100k_base")
-    MAX_TOKENS = 8191
-    logging.warning(f"Using default tiktoken encoder 'cl100k_base'. Max tokens set to {MAX_TOKENS}.")
-
-# ------------------------------------------------------------------
-# Segédfüggvények
-# ------------------------------------------------------------------
-def truncate_text(text: str, max_tokens: int) -> str:
-    """Truncates text to a maximum number of tokens."""
-    if not isinstance(text, str):  # Handle potential non-string inputs
-        text = str(text)
-    tokens = encoding.encode(text)
-    if len(tokens) > max_tokens:
-        truncated_tokens = tokens[:max_tokens]
-        return encoding.decode(truncated_tokens)
-    return text
-
-def get_openai_embeddings(texts: list[str], model: str, batch_size: int) -> list[list[float] | None]:
-    """Fetches embeddings for a list of texts using OpenAI API with batching, truncation, and retries."""
-    embeddings: list[list[float] | None] = [None] * len(texts)
-    for i in tqdm(range(0, len(texts), batch_size), desc="OpenAI Embeddings"):
-        batch_texts_original = texts[i:i + batch_size]
-        processed_batch = []
-        original_indices_in_batch = []  # Keep track of original indices for error reporting
-
-        # Preprocess and truncate texts in the batch
-        for idx, text in enumerate(batch_texts_original):
-            original_index = i + idx
-            original_indices_in_batch.append(original_index)
-            if pd.notna(text) and str(text).strip():
-                try:
-                    truncated_text = truncate_text(str(text), MAX_TOKENS)
-                    if len(truncated_text) < len(str(text)):
-                        logging.debug(f"Truncated text at original index {original_index} due to token limit.")
-                    processed_batch.append(truncated_text)
-                except Exception as e:
-                    logging.error(f"Error truncating text at original index {original_index}: {e}. Skipping.")
-                    processed_batch.append(" ")  # Add placeholder for skipped text
-            else:
-                processed_batch.append(" ")  # Use a space for empty/NaN text
-
-        if not processed_batch:  # Skip if batch is empty after processing
-            continue
-
-        retries = 5  # Increased from 3
-        delay = 10  # Increased from 5
-        success = False  # Flag to track success
-        while retries > 0:
-            try:
-                response = client.embeddings.create(
-                    input=processed_batch,
-                    model=model,
-                )
-                batch_embeddings = [item.embedding for item in response.data]
-
-                # Assign embeddings back, handling potential length mismatch if truncation failed
-                for j, emb in enumerate(batch_embeddings):
-                    if j < len(original_indices_in_batch):
-                        original_idx = original_indices_in_batch[j]
-                        if pd.notna(texts[original_idx]) and str(texts[original_idx]).strip() and processed_batch[j] != " ":
-                            embeddings[original_idx] = emb
-                        else:
-                            embeddings[original_idx] = None
-                success = True  # Mark as success
-                break  # Success
-            except RateLimitError as e:
-                logging.warning(f"Rate limit error encountered processing batch starting at original index {original_indices_in_batch[0]}: {e}. Retrying in {delay} seconds... ({retries-1} retries left)")
-                time.sleep(delay)
-                retries -= 1
-                delay *= 2  # Exponential backoff
-            except APIError as e:
-                if "context_length_exceeded" in str(e) or "maximum context length" in str(e):
-                    logging.error(f"OpenAI API context length error processing batch starting at original index {original_indices_in_batch[0]} DESPITE TRUNCATION: {e}.")
-                else:
-                    logging.error(f"OpenAI API error processing batch starting at original index {original_indices_in_batch[0]}: {e}")
-                for original_idx in original_indices_in_batch:
-                    if original_idx < len(embeddings):
-                        embeddings[original_idx] = None
-                retries = 0
-            except Exception as e:
-                logging.error(f"Unexpected error fetching embeddings for batch starting at original index {original_indices_in_batch[0]}: {e}")
-                for original_idx in original_indices_in_batch:
-                    if original_idx < len(embeddings):
-                        embeddings[original_idx] = None
-                retries = 0
-
-        # Use the success flag to determine if the batch failed
-        if not success:
-            logging.error(f"Failed to get some/all embeddings for batch starting at original index {original_indices_in_batch[0]} after multiple retries or due to errors.")
-            # Ensure failed batch embeddings are None
-            for original_idx in original_indices_in_batch:
-                if original_idx < len(embeddings):
-                    embeddings[original_idx] = None
-
-        # Add a small delay after each batch request (even successful ones)
-        # to proactively manage rate limits. Adjust the sleep duration as needed.
-        if success:  # Only sleep if the batch was successful
-            time.sleep(1)  # Sleep for 1 second
-
-    return embeddings
+    logging.error(f"Váratlan hiba az OpenAIEmbeddingModel inicializálásakor: {e}")
+    raise SystemExit(f"Váratlan hiba az OpenAIEmbeddingModel inicializálásakor: {e}")
 
 # ------------------------------------------------------------------
 # Fő végrehajtási blokk
@@ -377,19 +267,47 @@ def main():
     # ------------------------------------------------------------------
     # Embeddingek generálása
     # ------------------------------------------------------------------
-    logging.info(f"OpenAI embeddingek generálása a '{TEXT_COLUMN}' oszlop alapján...")
-    texts_to_embed = df[TEXT_COLUMN].tolist()
-    embeddings = get_openai_embeddings(
-        texts_to_embed,
-        model=OPENAI_EMBEDDING_MODEL,
-        batch_size=OPENAI_EMBEDDING_BATCH_SIZE
-    )
-    df['embedding'] = embeddings
-    logging.info("Embeddingek generálása befejezve.")
+    logging.info(f"OpenAI embeddingek generálása a '{TEXT_COLUMN}' oszlop alapján az OpenAIEmbeddingModel segítségével...")
+    
+    texts_for_embedding_series = df[TEXT_COLUMN].astype(str)
+    all_texts_list = texts_for_embedding_series.tolist()
 
-    failed_embeddings = df['embedding'].isna().sum()
-    if failed_embeddings > 0:
-        logging.warning(f"{failed_embeddings} sornál nem sikerült embeddinget generálni.")
+    embeddings_array = np.array([]) # Kezdeti értékadás az unbound hiba elkerülésére
+
+    try:
+        embeddings_array = embedding_model_instance.encode(
+            all_texts_list,
+            batch_size=EMBEDDING_BATCH_SIZE_FROM_CONFIG
+        )
+        logging.info(f"Sikeresen lekérdezve {len(embeddings_array)} embedding eredmény (beleértve a lehetséges NaN vektorokat).")
+
+        # Az embeddingek hozzárendelése a DataFrame-hez.
+        # Az embeddings_array sorai vagy érvényes embeddingek vagy NaN vektorok.
+        # A DataFrame-be listaként vagy None-ként szeretnénk őket tárolni.
+        
+        processed_embeddings_for_df = []
+        failed_count = 0
+        for i in range(embeddings_array.shape[0]):
+            # Ellenőrizzük, hogy az egész sor (vektor) NaN-e
+            if np.all(np.isnan(embeddings_array[i])):
+                processed_embeddings_for_df.append(None) # Pandas jobban kezeli a None-t az object oszlopokban
+                failed_count += 1
+            else:
+                processed_embeddings_for_df.append(embeddings_array[i].tolist()) # Lista formában
+        
+        df['embedding'] = processed_embeddings_for_df
+        
+        if failed_count > 0:
+            logging.warning(f"{failed_count} sornál nem sikerült embeddinget generálni (None értékkel helyettesítve).")
+        
+    except Exception as e:
+        logging.error(f"Kritikus hiba az embeddingek generálása és feldolgozása közben: {e}")
+        # Hiba esetén az embedding oszlopot None értékekkel töltjük fel
+        df['embedding'] = pd.Series([None] * len(df), dtype=object)
+        logging.warning(f"Minden embedding None értékre lett állítva a hiba miatt.")
+
+    logging.info("Embeddingek generálása és DataFrame-hez adása befejezve.")
+    # A failed_embeddings számlálót már fentebb kezeltük (failed_count)
 
     # ------------------------------------------------------------------
     # Kimeneti Parquet fájl írása
@@ -433,7 +351,7 @@ def main():
         logging.error(f"Hiba történt a Parquet fájl mentésekor: {e}")
         raise SystemExit("Hiba a Parquet mentésekor.")
 
-    del df, df_output, embeddings
+    del df, df_output, embeddings_array
     gc.collect()
 
     print("Az embedding generáló szkript futása befejeződött.")

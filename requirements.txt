@@ -20,7 +20,7 @@ scikit-learn
 plotly
 
 # Reinforcement Learning
-gym
+gymnasium
 # HuggingFace TRL (Optional, mentioned in README)
 
 # Visualization

@@ -1,3 +1,5 @@
+# Ez a szkript felelős a dokumentumok metaadataiból egy hálózati gráf felépítéséért,
+# amely a dokumentumok, jogszabályok és bíróságok közötti kapcsolatokat reprezentálja.
 import os
 import sys
 import argparse
@@ -9,30 +11,20 @@ import logging
 from collections import Counter
 from datetime import datetime, timezone
 
-# Configure logging
+# Loggolás alapbeállítása (a config.py felülírhatja, ha ott is van basicConfig)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Add project root to the Python path
+# Projekt gyökérkönyvtárának hozzáadása a Python útvonalhoz
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, project_root)
 
-# Import configuration settings
-try:
-    from configs import config
-except ImportError:
-    logging.error("Could not import config. Make sure configs/config.py exists.")
-    # Define minimal fallbacks
-    class MockConfig:
-        PROCESSED_PARQUET_DATA_PATH = 'processed_data/processed_documents.parquet'
-        GRAPH_OUTPUT_JSON_PATH = 'processed_data/graph_data/graph.json'
-        GRAPH_OUTPUT_GRAPHML_PATH = 'processed_data/graph_data/graph.graphml'
-        GRAPH_METADATA_PATH = 'processed_data/graph_data/graph_metadata.json'
-    config = MockConfig()
+# Konfigurációs beállítások importálása
+from configs import config
 
-# --- Helper Functions ---
+# --- Segédfüggvények ---
 
 def parse_list_string(data_string, separator=';'):
-    """Parses a string containing a list of items separated by a separator."""
+    """Egy stringként tárolt, elválasztóval tagolt listaelemet alakít át valódi listává."""
     if not data_string or pd.isna(data_string):
         return []
     
@@ -56,74 +48,77 @@ def parse_list_string(data_string, separator=';'):
     return []
 
 def is_valid_doc_id(doc_id):
-    """Basic validation for document IDs."""
+    """Alapvető ellenőrzés a dokumentumazonosítókra (legyen string és ne legyen üres)."""
     return isinstance(doc_id, str) and bool(doc_id.strip())
 
-# --- Main Graph Building Logic ---
+# --- Fő gráfépítő logika ---
 
 def build_graph(df, stop_jogszabalyok):
-    """Builds the NetworkX graph based on the DataFrame."""
-    G = nx.DiGraph()
-    logging.info("Starting graph construction...")
+    """Felépíti a NetworkX gráfot a bemeneti DataFrame alapján."""
+    G = nx.DiGraph() # Irányított gráf létrehozása
+    logging.info("Gráfépítés megkezdése...")
 
-    for _, doc_data in tqdm(df.iterrows(), total=df.shape[0], desc="Building Graph"):
+    for _, doc_data in tqdm(df.iterrows(), total=df.shape[0], desc="Gráf építése"): # tqdm progress bar
         doc_id = doc_data.get('doc_id')
         if not is_valid_doc_id(doc_id):
+            logging.debug(f"Érvénytelen vagy hiányzó doc_id ({doc_id}), a sor kihagyva.")
             continue
 
-        # Extract data fields
+        # Adatmezők kinyerése és listává alakítása
         jogszabalyhelyek = parse_list_string(doc_data.get('Jogszabalyhelyek', ''))
         kapcsolodo_hatarozatok = parse_list_string(doc_data.get('KapcsolodoHatarozatok', ''))
         kapcsolodo_birosagok = parse_list_string(doc_data.get('AllKapcsolodoBirosag', ''))
         
-        # Add document node with metadata
+        # Dokumentum csomópont hozzáadása metaadatokkal
         node_attrs = {
             "type": "dokumentum",
             "jogterulet": doc_data.get('jogterulet') if pd.notna(doc_data.get('jogterulet')) else None,
             "birosag": doc_data.get('birosag') if pd.notna(doc_data.get('birosag')) else None,
             "ev": int(doc_data.get('HatarozatEve')) if pd.notna(doc_data.get('HatarozatEve')) and str(doc_data.get('HatarozatEve')).isdigit() else None,
         }
-        node_attrs = {k: v for k, v in node_attrs.items() if v is not None}
+        node_attrs = {k: v for k, v in node_attrs.items() if v is not None} # Csak a nem None attribútumok
         
         if not G.has_node(doc_id):
             G.add_node(doc_id, **node_attrs)
-        else:
+        else: # Ha a csomópont már létezik (pl. egy hivatkozás miatt), frissítjük az attribútumait
             nx.set_node_attributes(G, {doc_id: {**G.nodes[doc_id], **node_attrs}})
 
         def add_or_increment_edge(u, v, rel_type):
+            """Hozzáad egy élt vagy növeli a súlyát, ha már létezik."""
             if G.has_edge(u, v):
                 G[u][v]['weight'] += 1
             else:
                 G.add_edge(u, v, relation_type=rel_type, weight=1)
 
-        # Add references to other decisions
+        # Hivatkozások hozzáadása más határozatokra
         for hatarozat_id in kapcsolodo_hatarozatok:
             if is_valid_doc_id(hatarozat_id):
-                if not G.has_node(hatarozat_id):
-                    G.add_node(hatarozat_id, type="dokumentum")
+                if not G.has_node(hatarozat_id): # Ha a hivatkozott csomópont még nem létezik
+                    G.add_node(hatarozat_id, type="dokumentum") # Alapértelmezett típussal
                 add_or_increment_edge(doc_id, hatarozat_id, "hivatkozik")
 
-        # Add court connections
+        # Bírósági kapcsolatok hozzáadása
         for birosag_name in kapcsolodo_birosagok:
             if birosag_name and isinstance(birosag_name, str):
-                birosag_node_id = f"birosag_{birosag_name.lower().replace(' ', '_')}"
+                birosag_node_id = f"birosag_{birosag_name.lower().replace(' ', '_')}" # Normalizált bíróság ID
                 if not G.has_node(birosag_node_id):
                     G.add_node(birosag_node_id, type="birosag", name=birosag_name)
                 add_or_increment_edge(doc_id, birosag_node_id, "targyalta")
 
-        # Handle legal references
+        # Jogszabályhelyek kezelése
         for jsz in jogszabalyhelyek:
-            if jsz and isinstance(jsz, str) and jsz not in stop_jogszabalyok:
+            if jsz and isinstance(jsz, str) and jsz not in stop_jogszabalyok: # Stop-lista ellenőrzése
+                # Jogszabály csomópont ID normalizálása
                 jsz_node_id = f"jogszabaly_{jsz.lower().replace(' ', '_').replace('.', '').replace('§', 'par').replace('(', '').replace(')', '')}"
                 if not G.has_node(jsz_node_id):
                     G.add_node(jsz_node_id, type="jogszabaly", reference=jsz)
                 add_or_increment_edge(doc_id, jsz_node_id, "hivatkozik_jogszabalyra")
 
-    logging.info(f"Graph construction finished. Nodes: {G.number_of_nodes()}, Edges: {G.number_of_edges()}")
+    logging.info(f"Gráfépítés befejezve. Csomópontok száma: {G.number_of_nodes()}, Élek száma: {G.number_of_edges()}")
     return G
 
 def save_graph(G, json_path, graphml_path):
-    """Saves the graph in both JSON and GraphML formats."""
+    """Elmenti a gráfot JSON és GraphML formátumban is."""
     # Save JSON format
     try:
         logging.info(f"Saving graph to {json_path} (JSON format)...")
@@ -145,7 +140,7 @@ def save_graph(G, json_path, graphml_path):
         logging.error(f"Failed to save graph to GraphML ({graphml_path}): {e}")
 
 def save_graph_metadata(G, stop_jogszabalyok_len, output_path):
-    """Saves metadata about the generated graph to a JSON file."""
+    """Elmenti a generált gráf metaadatait egy JSON fájlba."""
     logging.info(f"Saving graph metadata to {output_path}...")
     try:
         relation_types = {data.get('relation_type') for _, _, data in G.edges(data=True) if 'relation_type' in data}
@@ -166,7 +161,7 @@ def save_graph_metadata(G, stop_jogszabalyok_len, output_path):
         logging.error(f"Failed to save graph metadata to {output_path}: {e}")
 
 def determine_stop_jogszabalyok(df, column_name='Jogszabalyhelyek', threshold_percentage=0.005):
-    """Determines frequent legal references to be used as stop words."""
+    """Meghatározza a gyakori jogszabályhelyeket, amelyek "stop szavakként" funkcionálnak."""
     logging.info(f"Determining stop jogszabalyok with threshold {threshold_percentage*100}%...")
     
     if column_name not in df.columns:
@@ -189,31 +184,31 @@ def determine_stop_jogszabalyok(df, column_name='Jogszabalyhelyek', threshold_pe
     return stop_set
 
 def parse_args():
-    """Parses command-line arguments."""
-    parser = argparse.ArgumentParser(description="Build NetworkX Graph from Document Metadata")
+    """Parancssori argumentumok feldolgozása."""
+    parser = argparse.ArgumentParser(description="NetworkX Gráf Építése Dokumentum Metaadatokból")
     parser.add_argument(
         "--input",
         type=str,
-        default=getattr(config, 'PROCESSED_PARQUET_DATA_PATH', 'processed_data/processed_documents.parquet'),
-        help="Path to the input Parquet file"
+        default=config.PROCESSED_PARQUET_DATA_PATH,
+        help="Path to the input Parquet file (default: from config.py)"
     )
     parser.add_argument(
         "--output-json",
         type=str,
-        default=getattr(config, 'GRAPH_OUTPUT_JSON_PATH', 'processed_data/graph_data/graph.json'),
-        help="Path to save the output graph in JSON format"
+        default=config.GRAPH_OUTPUT_JSON_PATH,
+        help="Path to save the output graph in JSON format (default: from config.py)"
     )
     parser.add_argument(
         "--output-graphml",
         type=str,
-        default=getattr(config, 'GRAPH_OUTPUT_GRAPHML_PATH', 'processed_data/graph_data/graph.graphml'),
-        help="Path to save the output graph in GraphML format"
+        default=config.GRAPH_OUTPUT_GRAPHML_PATH,
+        help="Path to save the output graph in GraphML format (default: from config.py)"
     )
     parser.add_argument(
         "--output-metadata",
         type=str,
-        default=getattr(config, 'GRAPH_METADATA_PATH', 'processed_data/graph_data/graph_metadata.json'),
-        help="Path to save the graph metadata JSON"
+        default=config.GRAPH_METADATA_PATH,
+        help="Path to save the graph metadata JSON (default: from config.py)"
     )
     parser.add_argument(
         "--stopword-threshold",
@@ -225,12 +220,12 @@ def parse_args():
         "--stopword-column",
         type=str,
         default='Jogszabalyhelyek',
-        help="Column name containing legal references for stop word analysis"
+        help="Column name containing legal references for stop word analysis (default: Jogszabalyhelyek)"
     )
     return parser.parse_args()
 
 def main():
-    """Main function to load data, build graph, and save outputs."""
+    """Fő függvény az adatok betöltéséhez, a gráf felépítéséhez és a kimenetek mentéséhez."""
     args = parse_args()
 
     # Validate threshold

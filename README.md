@@ -15,14 +15,22 @@ Mappastruktúra
 ├── /data_loader
 │   ├── preprocess_documents.py
 │   ├── generate_embeddings.py
-│   └── graph_builder.py (tervezett)
+│   ├── graph_builder.py
+│   ├── build_faiss_index.py
+│   └── eda_clean_for_embedding.py
+├── /models
+│   └── embedding.py
 ├── /reinforcement_learning
-│   ├── train_agent.py (tervezett)
-│   ├── evaluate_agent.py (tervezett)
+│   ├── train_agent.py
+│   ├── evaluate_agent.py
+│   ├── agent.py
+│   ├── environment.py
 │   └── reward_models/
 ├── /notebooks
 │   ├── eda_birosagi_hatarozatok.ipynb
-│   └── keresoproto_terv.ipynb
+│   ├── keresoproto_terv.ipynb
+│   ├── EDA_birosagi_embeddingek.ipynb
+│   └── graph_analysis.ipynb
 ├── /processed_data
 │   ├── raw_data_for_eda.csv
 │   └── embedded_data.parquet
@@ -55,25 +63,37 @@ Konfiguráció
 Használati lépések
 ------------------
 1. Nyers adatok feldolgozása:
-   python src/data_loader/preprocess_documents.py
+   python data_loader/preprocess_documents.py
 
-2. Embeddingek generálása:
-   python src/data_loader/generate_embeddings.py
+2. Adatok tisztítása embedding generálás előtt:
+   python data_loader/eda_clean_for_embedding.py
 
-3. Gráf építése NetworkX segítségével:
-   python src/data_loader/graph_builder.py
+3. Embeddingek generálása:
+   python data_loader/generate_embeddings.py
 
-4. Exploratory Data Analysis (EDA):
+4. FAISS index építése:
+   python data_loader/build_faiss_index.py
+
+5. Gráf építése NetworkX segítségével:
+   python data_loader/graph_builder.py
+
+6. Exploratory Data Analysis (EDA) - Eredeti adatok:
    jupyter notebook notebooks/eda_birosagi_hatarozatok.ipynb
 
-5. Kereső prototípus építése:
+7. Exploratory Data Analysis (EDA) - Embeddingek:
+   jupyter notebook notebooks/EDA_birosagi_embeddingek.ipynb
+
+8. Gráf Analízis:
+   jupyter notebook notebooks/graph_analysis.ipynb
+
+9. Kereső prototípus tervezése/tesztelése:
    jupyter notebook notebooks/keresoproto_terv.ipynb
 
-6. Rangsortanulás (megerősítéses tanulás):
-   python src/reinforcement_learning/train_agent.py
+10. Rangsortanulás (megerősítéses tanulás) - Agent tanítása:
+    python reinforcement_learning/train_agent.py
 
-7. Agent kiértékelése:
-   python src/reinforcement_learning/evaluate_agent.py
+11. Agent kiértékelése:
+    python reinforcement_learning/evaluate_agent.py
 
 Megerősítéses tanulás és rangsortanulási modul
 ----------------------------------------------

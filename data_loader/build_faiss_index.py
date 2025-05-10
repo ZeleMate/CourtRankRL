@@ -1,8 +1,8 @@
 # src/data_loader/build_faiss_index.py
 """
-FAISS index építő script a jogi dokumentumok embeddingjeihez.
+FAISS index építő szkript a jogi dokumentumok embeddingjeihez.
 
-Ez a script beolvassa a parquet fájlból az előre elkészített embeddinget és létrehoz
+Ez a szkript beolvassa a Parquet fájlból az előre elkészített embeddingeket és létrehoz
 belőlük egy FAISS indexet a gyors hasonlósági kereséshez.
 """
 import pandas as pd
@@ -17,7 +17,7 @@ import pickle
 from pathlib import Path
 from typing import Tuple, Dict, Any
 
-# Add project root to the Python path
+# Projekt gyökérkönyvtárának hozzáadása a Python útvonalhoz
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
@@ -32,16 +32,16 @@ OUT_DIR = config.OUT_DIR
 PROCESSED_PARQUET_DATA_PATH = config.PROCESSED_PARQUET_DATA_PATH
 EMBEDDING_DIMENSION = config.EMBEDDING_DIMENSION
 
-# FAISS specifikus beállítások hozzáadása a konfigurációhoz
+# FAISS specifikus elérési utak és paraméterek a konfigurációból
 FAISS_INDEX_PATH = OUT_DIR / "faiss_index.bin"
 FAISS_MAPPING_PATH = OUT_DIR / "faiss_id_mapping.pkl"
-FAISS_NLIST = 100    # Hány darab clusterre osszuk az adatokat
-FAISS_NPROBE = 10    # Hány clustert vizsgálunk kereséskor
+FAISS_NLIST = config.FAISS_INDEX_NLIST
+FAISS_NPROBE = config.FAISS_INDEX_NPROBE
 
 # Kimeneti könyvtár létrehozása, ha nem létezik
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-# Logging beállítása
+# Loggolás beállítása
 logging.basicConfig(
     level=config.LOGGING_LEVEL,
     format=config.LOGGING_FORMAT
@@ -50,86 +50,88 @@ logging.basicConfig(
 def create_faiss_index(vectors: np.ndarray) -> Any:
     """
     Létrehoz egy FAISS indexet a megadott vektorokból.
-    
+    A vektorok száma alapján választ IndexFlatL2 vagy IndexIVFFlat típust.
+
     Args:
-        vectors: A beágyazási vektorok numpy tömbje
+        vectors: A beágyazási vektorok NumPy tömbje (float32).
     
     Returns:
-        A létrehozott FAISS index
+        A létrehozott FAISS index (faiss.Index objektum).
     """
     vector_dimension = vectors.shape[1]
     vector_count = vectors.shape[0]
-    logging.info(f"Vektorok száma: {vector_count}, dimenziószáma: {vector_dimension}")
+    logging.info(f"FAISS index létrehozása {vector_count} vektorral, dimenzió: {vector_dimension}")
     
-    # Ellenőrizzük, hogy az adatok megfelelő formátumban vannak-e
     if not vectors.flags.c_contiguous:
-        logging.warning("Az adatok nem C-contiguous formátumban vannak, átalakítás...")
-        vectors = np.ascontiguousarray(vectors)
+        logging.warning("A bemeneti vektorok nem C-folyamatosak (C-contiguous), átalakítás...")
+        vectors = np.ascontiguousarray(vectors, dtype=np.float32)
     
-    # Index típus kiválasztása az adatok mérete alapján
     if vector_count < 10000:
-        # Kis adathalmazhoz egyszerű indexet használunk
-        logging.info("Kis adathalmaz, IndexFlatL2 használata")
+        logging.info(f"Kis adathalmaz ({vector_count} vektor), IndexFlatL2 használata.")
         index = faiss.IndexFlatL2(vector_dimension)
     else:
-        # Nagyobb adathalmazhoz IVF indexet használunk
-        logging.info(f"Nagy adathalmaz, IVF index létrehozása {FAISS_NLIST} clusterrel")
-        # IndexFlatL2 létrehozása kvantálóként
+        logging.info(f"Nagyobb adathalmaz ({vector_count} vektor), IndexIVFFlat létrehozása {FAISS_NLIST} klaszterrel.")
         quantizer = faiss.IndexFlatL2(vector_dimension)
-        # IndexIVFFlat létrehozása a megfelelő paraméterekkel
         index = faiss.IndexIVFFlat(quantizer, vector_dimension, FAISS_NLIST, faiss.METRIC_L2)
         
-        # IVF index betanítása
-        logging.info("IVF index betanítása...")
-        
-        # Nagy adathalmaznál mintavételezés a tanításhoz
-        if vector_count > 1_000_000:
-            logging.info("Túl sok vektor, mintavételezés a betanításhoz...")
-            sample_indices = np.random.choice(vector_count, 1_000_000, replace=False)
-            train_vectors = vectors[sample_indices]
-            index.train(train_vectors)  # type: ignore
-            del sample_indices
-            del train_vectors
-            gc.collect()
-        else:
+        logging.info("IndexIVFFlat betanítása...")
+        if not index.is_trained and vector_count > 0:
             index.train(vectors)  # type: ignore
-        
-        # Keresési paraméter beállítása
+        else:
+            logging.info("Az index már betanított vagy nincs adat a tanításhoz.")
+            
         index.nprobe = FAISS_NPROBE
     
-    # Adatok hozzáadása az indexhez
+    logging.info("Vektorok hozzáadása az indexhez...")
     start_time = time.time()
-    index.add(vectors)  # type: ignore
-    logging.info(f"Indexelés kész, {vector_count} vektor feldolgozva, időtartam: {time.time() - start_time:.2f} mp")
+    if vector_count > 0:
+        index.add(vectors)  # type: ignore
+    else:
+        logging.warning("Nincsenek vektorok az indexhez adáshoz.")
+    logging.info(f"Vektorok indexelése befejezve. Feldolgozott vektorok: {index.ntotal if vector_count > 0 else 0}, idő: {time.time() - start_time:.2f} mp")
     
     return index
 
 def test_search(index: Any, vectors: np.ndarray, id_mapping: Dict[int, Any], k: int = 5) -> None:
     """
-    Az indexet teszteli egy egyszerű kereséssel.
+    Leteszteli a FAISS indexet egy egyszerű kereséssel az első vektor alapján.
     
     Args:
-        index: A FAISS index
-        vectors: A vektorok, amelyekből az index készült
-        id_mapping: Az azonosító leképezés
-        k: Hány legközelebbi szomszédot keressünk
+        index: A FAISS index.
+        vectors: A vektorok, amelyekből az index készült (csak az elsőt használja a teszthez).
+        id_mapping: Az FAISS index ID-k és az eredeti dokumentum ID-k közötti leképezés.
+        k: A keresendő legközelebbi szomszédok száma.
     """
-    logging.info("Index tesztelése egyszerű kereséssel...")
-    # Első vektort használjuk lekérdezésként
-    query_vector = vectors[0].reshape(1, -1)
+    if vectors.shape[0] == 0:
+        logging.warning("Nincsenek vektorok a keresés teszteléséhez.")
+        return
+
+    logging.info(f"FAISS index tesztelése: {k} legközelebbi szomszéd keresése az első vektorhoz...")
+    query_vector = np.ascontiguousarray(vectors[0:1], dtype=np.float32)
     
     start_time = time.time()
     distances, indices = index.search(query_vector, k)
     search_time = time.time() - start_time
     
-    logging.info(f"Keresési idő: {search_time*1000:.1f} ms")
-    logging.info(f"Találatok FAISS ID-jei: {indices[0].tolist()}")
-    
-    # Eredeti dokumentum ID-k visszakeresése
-    doc_ids = [id_mapping[idx] for idx in indices[0].tolist()]
-    logging.info(f"Találatok dokumentum ID-jei: {doc_ids}")
+    logging.info(f"Keresési idő: {search_time*1000:.2f} ms")
+    if indices.size > 0:
+        logging.info(f"Találatok FAISS indexei: {indices[0].tolist()}")
+        try:
+            doc_ids = [id_mapping[idx] for idx in indices[0].tolist() if idx in id_mapping]
+            logging.info(f"Találatok eredeti dokumentum ID-jai: {doc_ids}")
+        except KeyError as e:
+            logging.error(f"Hiba a dokumentum ID-k visszakeresésekor a leképezésből: hiányzó FAISS index {e}")
+    else:
+        logging.info("A tesztkeresés nem adott vissza találatot.")
 
 def main():
+    """
+    Fő függvény a FAISS index létrehozásához.
+
+    Beolvassa a feldolgozott Parquet fájlt (amely tartalmazza az embeddingeket),
+    kiszűri a hiányzó embeddinggel rendelkező sorokat, létrehozza a FAISS indexet,
+    elmenti az indexet és az ID leképezést, majd lefuttat egy teszt keresést.
+    """
     # Bemeneti fájl ellenőrzése
     if not PROCESSED_PARQUET_DATA_PATH.exists():
         logging.error(f"A bemeneti fájl nem található: {PROCESSED_PARQUET_DATA_PATH}")

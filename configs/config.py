@@ -48,8 +48,15 @@ SUPPORTED_TEXT_EXTENSIONS = ['.docx', '.rtf']
 OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
 OPENAI_EMBEDDING_DIMENSION = 1536
 OPENAI_EMBEDDING_BATCH_SIZE = 100
+OPENAI_EMBEDDING_MAX_TOKENS = 8191 # Maximális token szám a beágyazási modellhez
 # Load API key from environment variable
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+# ------------------------------------------------------------------
+# FAISS Index Beállítások (build_faiss_index.py)
+# ------------------------------------------------------------------
+FAISS_INDEX_NLIST = 100  # Inverz fájl celláinak száma
+FAISS_INDEX_NPROBE = 10  # Kereséskor vizsgált cellák száma
 
 # Kimeneti oszlopok a Parquet fájlhoz (generate_embeddings.py)
 EMBEDDING_OUTPUT_COLUMNS = [
@@ -80,6 +87,11 @@ PARQUET_INDEX = False # Írjuk-e a DataFrame indexet a Parquet-be
 # ------------------------------------------------------------------
 LOGGING_LEVEL = logging.INFO
 LOGGING_FORMAT = '%(asctime)s - %(levelname)s - %(message)s'
+
+# ------------------------------------------------------------------
+# Adattisztítási beállítások (eda_clean_for_embedding.py)
+# ------------------------------------------------------------------
+CLEANING_MIN_TEXT_LENGTH = 50 # Minimális szöveghossz a tisztításhoz
 
 # ------------------------------------------------------------------
 # Egyéb beállítások (pl. modell, keresés, gráf DB, RL - ezek már itt voltak)

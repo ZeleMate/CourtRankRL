@@ -2,50 +2,57 @@
 Module for the reinforcement learning environment focused on ranking search results.
 """
 
-import gym
-from gym import spaces
+import gymnasium as gym
+from gymnasium import spaces
 import numpy as np
 from typing import List, Dict, Tuple, Any
-from ..models.embedding import EmbeddingModel
-from ..search.semantic_search import SemanticSearch
+import logging # logging importálása
+
+# Abszolút importok használata, feltételezve, hogy a projekt gyökere a PYTHONPATH-on van
+from models.embedding import OpenAIEmbeddingModel
+from search.semantic_search import SemanticSearch
 
 class RankingEnv(gym.Env):
     """
-    RL environment for learning to re-rank legal document search results.
+    Megerősítéses tanulási (RL) környezet jogi dokumentumok keresési eredményeinek
+    újrarangsorolásának tanításához.
     """
     metadata = {'render.modes': ['human']}
 
-    def __init__(self, model: EmbeddingModel, documents: List[str], search_engine: SemanticSearch, initial_top_k: int):
+    def __init__(self, model: OpenAIEmbeddingModel, documents: List[str], search_engine: SemanticSearch, initial_top_k: int):
         """
-        Initialize environment.
+        Inicializálja a környezetet.
 
         Args:
-            model: Embedding model instance.
-            documents: List of all document strings in the corpus.
-            search_engine: SemanticSearch instance for candidate retrieval.
-            initial_top_k: The number of initial candidates to retrieve and re-rank.
+            model: Beágyazási modell példánya (OpenAIEmbeddingModel).
+            documents: A korpuszban található összes dokumentum szövegének listája.
+            search_engine: SemanticSearch példány a jelöltek lekéréséhez.
+            initial_top_k: A kezdetben lekérendő és újrarangsorolandó jelöltek száma.
         """
         super().__init__()
         self.model = model
-        self.documents = documents
+        self.documents = documents # Ezt a teljes dokumentumlistát valószínűleg nem itt kellene tárolni, ha nagy.
+                                 # A search_engine felelőssége lehet a dokumentumokhoz való hozzáférés.
+                                 # Jelenleg a SemanticSearch placeholder is megkapja.
         self.search_engine = search_engine
         self.initial_top_k = initial_top_k
+        self.embedding_dim = model.get_dimension() # Embedding dimenzió lekérése és tárolása
 
-        # --- State Space ---
-        # Represents the query and the initial list of candidate documents.
-        # Example: Concatenation of query embedding + K document embeddings.
-        # Needs careful design based on what the policy network expects.
-        embedding_dim = self.model.encode(["test"])[0].shape[0]
-        state_dim = embedding_dim * (1 + self.initial_top_k) # Query + K docs
+        # --- Állapottér (State Space) ---
+        # A lekérdezést és a kezdeti jelölt dokumentumok listáját reprezentálja.
+        # Pl.: Lekérdezés embedding + K dokumentum embedding összefűzése.
+        # Óvatos tervezést igényel a policy hálózat elvárásai alapján.
+        # embedding_dim = self.model.encode(["test"])[0].shape[0] # Régi mód
+        state_dim = self.embedding_dim * (1 + self.initial_top_k) # Query + K docs
         self.observation_space = spaces.Box(
             low=-np.inf, high=np.inf, # Embeddings can have negative values
             shape=(state_dim,),
             dtype=np.float32
         )
 
-        # --- Action Space ---
-        # Represents the re-ranked order of the initial_top_k documents.
-        # Option 1: Output scores for each doc (requires sorting post-action). Size K.
+        # --- Akciótér (Action Space) ---
+        # A `initial_top_k` dokumentum újrarangsorolt sorrendjét reprezentálja.
+        # 1. opció: Minden dokumentumhoz egy pontszám (akció utáni rendezést igényel). Méret: K.
         # Option 2: Output a permutation directly (complex). Size K! or requires special handling.
         # Option 3: Pairwise preferences (complex). Size K*(K-1)/2.
         # Let's use Option 1: Output scores for simplicity in definition.
@@ -61,69 +68,99 @@ class RankingEnv(gym.Env):
         self.candidate_docs: List[Tuple[int, str, float]] = [] # (original_idx, text, initial_score)
         self.candidate_embeddings: np.ndarray | None = None
 
-    def reset(self, query: str | None = None) -> np.ndarray:
+    def reset(self, query: str | None = None, *, seed: int | None = None, options: dict | None = None) -> Tuple[np.ndarray, Dict[str, Any]]:
         """
-        Reset the environment with a new query and initial candidate set.
+        Visszaállítja a környezetet egy új lekérdezéssel és kezdeti jelölt halmazzal.
+        Ez a metódus előkészíti a környezetet egy új epizódra.
+
+        A következő lépéseket hajtja végre:
+        1. Beállítja az aktuális lekérdezést és generálja annak embeddingjét.
+        2. Lekéri a kezdeti jelölt dokumentumokat a search_engine segítségével.
+        3. Feltölti a jelölteket, ha kevesebb érkezik vissza, mint `initial_top_k`.
+        4. Generál embeddingeket az érvényes jelölt dokumentumokhoz.
+        5. Összeállítja és visszaadja a kezdeti állapot megfigyelést és egy info szótárat.
 
         Args:
-            query: The search query string. If None, a default/random query might be used.
+            query: A keresési lekérdezés szövege. Ha None, egy alapértelmezett lekérdezés ("Jogellenes elbocsátás") kerül használatra.
+            seed: Opcionális seed a véletlenszám-generátorhoz, amit a `super().reset()` kap meg.
+                  Ez segíti a környezet reprodukálhatóságát.
+            options: Opcionális, környezet-specifikus beállításokat tartalmazó szótár (jelenleg nincs használatban).
 
         Returns:
-            Initial observation (state).
+            Tuple[np.ndarray, Dict[str, Any]]:
+                - observation (np.ndarray): A környezet kezdeti állapota, tipikusan a lekérdezés embedding
+                  és a jelölt dokumentumok embeddingjeinek összefűzése. Alakját a `self.observation_space` határozza meg.
+                - info (Dict[str, Any]): Egy szótár, ami kiegészítő információkat tartalmaz a reset folyamatról,
+                  mint például az aktuális lekérdezés és a jelölt dokumentumok száma. Példa:
+                  `{"current_query": self.current_query, "candidate_docs_count": len(self.candidate_docs)}`
         """
+        super().reset(seed=seed) # Call super().reset() with seed
+
         if query is None:
             # Replace with a more robust way to get queries for training/evaluation
             query = "Jogellenes elbocsátás"
         self.current_query = query
-        self.current_query_embedding = self.model.encode([query])[0].astype(np.float32)
+        
+        query_embedding_result = self.model.encode([query])
+        # query_embedding_result is a NumPy array, potentially with a NaN vector
+        if query_embedding_result.shape[0] > 0 and not np.all(np.isnan(query_embedding_result[0])):
+            self.current_query_embedding = query_embedding_result[0].astype(np.float32)
+        else:
+            self.current_query_embedding = np.zeros(self.embedding_dim, dtype=np.float32)
+            logging.warning(f"Query embedding for '{query}' failed or resulted in NaN. Using zero vector.") # logging használata
 
-        # Get initial candidates from semantic search
         self.candidate_docs = self.search_engine.search_candidates(query, self.initial_top_k)
 
-        # Ensure we have K candidates, pad if necessary (important for fixed-size state/action)
         if len(self.candidate_docs) < self.initial_top_k:
-            # Handle padding: Add dummy docs/embeddings or adjust state/action space dynamically (more complex)
-            # For now, let's assume we always get K or handle errors if not.
-             print(f"Warning: Got {len(self.candidate_docs)} candidates, expected {self.initial_top_k}. Padding/error handling needed.")
-             # Simple padding example (not robust):
-             num_missing = self.initial_top_k - len(self.candidate_docs)
-             dummy_doc = (-1, "", 0.0)
-             self.candidate_docs.extend([dummy_doc] * num_missing)
+            logging.warning(f"Got {len(self.candidate_docs)} candidates, expected {self.initial_top_k}. Padding.") # logging használata
+            num_missing = self.initial_top_k - len(self.candidate_docs)
+            dummy_doc = (-1, "", 0.0)
+            self.candidate_docs.extend([dummy_doc] * num_missing)
 
-
-        # Get embeddings for candidate docs (handle potential missing docs if padding)
-        candidate_texts = [doc[1] for doc in self.candidate_docs if doc[0] != -1]
+        candidate_texts = [doc[1] for doc in self.candidate_docs if doc[0] != -1 and doc[1]] # Csak valós, nem üres szövegek
+        
         if candidate_texts:
-             embeddings = self.model.encode(candidate_texts).astype(np.float32)
-             # Need to map embeddings back to the padded list structure
-             self.candidate_embeddings = np.zeros((self.initial_top_k, self.current_query_embedding.shape[0]), dtype=np.float32)
-             valid_indices = [i for i, doc in enumerate(self.candidate_docs) if doc[0] != -1]
-             if len(valid_indices) == embeddings.shape[0]:
-                 self.candidate_embeddings[valid_indices, :] = embeddings
-             else:
-                 print("Error: Embedding count mismatch after encoding candidates.")
-                 # Fallback to zeros or raise error
-        else:
-             self.candidate_embeddings = np.zeros((self.initial_top_k, self.current_query_embedding.shape[0]), dtype=np.float32)
+            candidate_embeddings_result = self.model.encode(candidate_texts)
+            # Most feltételezzük, hogy candidate_embeddings_result annyi sort ad vissza, ahány candidate_texts elem van,
+            # és a sikertelenek helyén NaN vektorok vannak.
+            self.candidate_embeddings = np.zeros((self.initial_top_k, self.embedding_dim), dtype=np.float32)
+            
+            valid_text_indices_in_cand_docs = [i for i, doc_tuple in enumerate(self.candidate_docs) if doc_tuple[0] != -1 and doc_tuple[1]]
+            num_actual_embeddings_generated = candidate_embeddings_result.shape[0]
 
+            # Iterálunk a generált embeddingeken (ami annyi, ahány valid candidate_text volt)
+            for i in range(num_actual_embeddings_generated):
+                original_padded_idx = valid_text_indices_in_cand_docs[i] # Index a self.candidate_docs-ban (ami már paddelt lehet)
+                if not np.all(np.isnan(candidate_embeddings_result[i])):
+                    self.candidate_embeddings[original_padded_idx, :] = candidate_embeddings_result[i].astype(np.float32)
+                else:
+                    # Ha NaN vektort kaptunk, a self.candidate_embeddings már nullákkal van inicializálva arra a pozícióra
+                    logging.warning(f"Candidate embedding for doc '{self.candidate_docs[original_padded_idx][1][:30]}...' resulted in NaN. Using zero vector for this candidate.") # logging használata
+        else: # Nincsenek érvényes candidate_texts
+            self.candidate_embeddings = np.zeros((self.initial_top_k, self.embedding_dim), dtype=np.float32)
+            if self.initial_top_k > 0:
+                 logging.warning("No valid candidate texts to embed. Using zero vectors for all candidate embeddings.") # logging használata
 
-        # Construct the state
         state = self._get_state()
-        return state
+        # info should typically be a dictionary
+        info = {"current_query": self.current_query, "candidate_docs_count": len(self.candidate_docs)}
+        return state, info
 
-    def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, Dict]:
+    def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, bool, Dict]:
         """
-        Take a step by applying the re-ranking action.
-        The reward is determined externally based on expert evaluation of the ranking produced by 'action'.
+        Egy lépést tesz a környezetben az újrarangsorolási akció alkalmazásával.
+        A jutalmat (reward) külsőleg kell meghatározni a `action` által előállított rangsor szakértői értékelése alapján.
 
         Args:
-            action: The action from the agent (e.g., scores for each candidate doc).
+            action: Az ágenstől kapott akció (pl. pontszámok minden jelölt dokumentumhoz).
 
         Returns:
-            observation: The current state (doesn't change within an episode for ranking).
-            reward: The reward for the ranking produced by the action (needs external calculation).
-            done: True, as ranking is typically a one-step process per query.
-            info: Dictionary containing the ranked list based on the action.
+            Tuple[np.ndarray, float, bool, bool, Dict]:
+                - observation (np.ndarray): Az aktuális állapot (rangsorolás esetén egy epizódon belül nem változik).
+                - reward (float): A jutalom az akció által előállított rangsorért (külső számítást igényel).
+                - done (bool): Igaz, mivel a rangsorolás tipikusan egylépéses folyamat lekérdezésenként.
+                - truncated (bool): Tipikusan hamis rangsorolásnál, hacsak nincs lépéslimit (itt nincs).
+                - info (Dict[str, Any]): Szótár, ami az akció alapján előállított rangsorolt listát tartalmazza.
         """
         # 'action' contains scores for each of the K candidate documents.
         # Higher scores should mean higher rank.
@@ -143,6 +180,7 @@ class RankingEnv(gym.Env):
         reward = 0.0 # Placeholder - must be calculated externally
 
         done = True # Ranking is a single step per query
+        truncated = False # Typically false for ranking, unless there's a step limit not used here
         info = {
             "query": self.current_query,
             "initial_candidates": self.candidate_docs,
@@ -153,44 +191,85 @@ class RankingEnv(gym.Env):
         # State doesn't change after the action in this setup
         state = self._get_state()
 
-        return state, reward, done, info
+        return state, reward, done, truncated, info
 
     def _get_state(self) -> np.ndarray:
-        """Construct the state vector from query and candidate embeddings."""
-        if self.current_query_embedding is None or self.candidate_embeddings is None:
-             # Return a zero vector or handle error appropriately
-             embedding_dim = self.observation_space.shape[0] // (1 + self.initial_top_k)
-             return np.zeros(self.observation_space.shape, dtype=np.float32)
+        """
+        Összeállítja az állapotvektort a lekérdezés és a jelölt dokumentumok embeddingjeiből.
+        """
+        # embedding_dim_val is now self.embedding_dim, defined in __init__
+        
+        current_query_embedding_safe = self.current_query_embedding
+        if current_query_embedding_safe is None:
+            logging.warning("self.current_query_embedding is None in _get_state. Using zero vector.") # logging használata
+            current_query_embedding_safe = np.zeros(self.embedding_dim, dtype=np.float32)
 
-        # Concatenate query embedding and all candidate embeddings
-        state_parts = [self.current_query_embedding] + list(self.candidate_embeddings)
-        state = np.concatenate(state_parts).astype(np.float32)
+        candidate_embeddings_safe = self.candidate_embeddings
+        if candidate_embeddings_safe is None:
+            logging.warning("self.candidate_embeddings is None in _get_state. Using zero array.") # logging használata
+            candidate_embeddings_safe = np.zeros((self.initial_top_k, self.embedding_dim), dtype=np.float32)
+        
+        # Ensure candidate_embeddings_safe has the correct second dimension if it's not None
+        # This check might be less critical if self.embedding_dim is consistently used.
+        if candidate_embeddings_safe.shape[1] != self.embedding_dim:
+             logging.warning(f"Mismatch in embedding dimensions in _get_state. Expected: {self.embedding_dim}, Candidates got: {candidate_embeddings_safe.shape[1]}. Adjusting candidates.") # logging használata
+             adjusted_candidates = np.zeros((candidate_embeddings_safe.shape[0], self.embedding_dim), dtype=np.float32)
+             min_dim = min(candidate_embeddings_safe.shape[1], self.embedding_dim)
+             adjusted_candidates[:, :min_dim] = candidate_embeddings_safe[:, :min_dim]
+             candidate_embeddings_safe = adjusted_candidates
 
-        # Ensure state shape matches observation space
-        if state.shape[0] != self.observation_space.shape[0]:
-             # Handle potential shape mismatch due to padding/errors
-             print(f"Warning: State shape mismatch. Expected {self.observation_space.shape[0]}, got {state.shape[0]}.")
-             # Attempt to fix or raise error - e.g., pad/truncate state
-             expected_len = self.observation_space.shape[0]
-             if state.shape[0] < expected_len:
-                 padded_state = np.zeros(expected_len, dtype=np.float32)
-                 padded_state[:state.shape[0]] = state
-                 state = padded_state
-             else:
-                 state = state[:expected_len]
+        # state_parts = [current_query_embedding_safe] + [cand_emb for cand_emb in candidate_embeddings_safe]
+        # Biztosítjuk, hogy a candidate_embeddings_safe sorai legyenek a listában
+        state_parts = [current_query_embedding_safe]
+        for i in range(candidate_embeddings_safe.shape[0]):
+            state_parts.append(candidate_embeddings_safe[i])
+        
+        try:
+            state = np.concatenate(state_parts).astype(np.float32)
+        except ValueError as e:
+            logging.error(f"Error during state concatenation: {e}. State parts shapes:") # logging használata
+            logging.error(f"Query embedding shape: {current_query_embedding_safe.shape}") # logging használata
+            for i, p_part in enumerate(candidate_embeddings_safe):
+                logging.error(f"Candidate {i} embedding shape: {p_part.shape}") # logging használata
+            if hasattr(self.observation_space, 'shape') and self.observation_space.shape is not None:
+                state = np.zeros(self.observation_space.shape, dtype=np.float32)
+                logging.warning("Falling back to zero state due to concatenation error.") # logging használata
+            else: 
+                raise e
+
+        if hasattr(self.observation_space, 'shape') and self.observation_space.shape is not None:
+            expected_len = self.observation_space.shape[0]
+            if state.shape[0] != expected_len:
+                logging.warning(f"State shape mismatch. Expected {expected_len}, got {state.shape[0]}. Adjusting state.") # logging használata
+                if state.shape[0] < expected_len:
+                    padded_state = np.zeros(expected_len, dtype=np.float32)
+                    padded_state[:state.shape[0]] = state
+                    state = padded_state
+                else:
+                    state = state[:expected_len]
+        else:
+            logging.warning("self.observation_space.shape is None in _get_state. Cannot verify/adjust state shape.") # logging használata
 
         return state
 
     def render(self, mode='human'):
-        """Render the environment state (optional)."""
+        """
+        Megjeleníti a környezet állapotát (opcionális).
+
+        Args:
+            mode (str): A megjelenítési mód. Jelenleg csak a 'human' támogatott.
+        """
         if mode == 'human':
+            # A render metódusban a print elfogadható, mivel ez a felhasználói felület része
             print(f"Current Query: {self.current_query}")
             print("Candidates:")
             for i, (idx, doc, score) in enumerate(self.candidate_docs):
                 print(f"  {i+1}. (ID: {idx}, Score: {score:.4f}) {doc[:100]}...")
         else:
-            super().render(mode=mode)
+            super().render() # Gymnasium's Env.render() might not take mode, or handles it. Let's try without for now.
 
     def close(self):
-        """Clean up environment resources."""
+        """
+        Felszabadítja a környezet erőforrásait.
+        """
         pass
