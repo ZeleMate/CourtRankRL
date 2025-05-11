@@ -139,7 +139,7 @@ def save_graph(G, json_path, graphml_path):
     except Exception as e:
         logging.error(f"Failed to save graph to GraphML ({graphml_path}): {e}")
 
-def save_graph_metadata(G, stop_jogszabalyok_len, output_path):
+def save_graph_metadata(G, stop_jogszabalyok_set, output_path):
     """Elmenti a generált gráf metaadatait egy JSON fájlba."""
     logging.info(f"Saving graph metadata to {output_path}...")
     try:
@@ -149,7 +149,8 @@ def save_graph_metadata(G, stop_jogszabalyok_len, output_path):
             "generation_timestamp_utc": datetime.now(timezone.utc).isoformat(),
             "node_count": G.number_of_nodes(),
             "edge_count": G.number_of_edges(),
-            "stop_jogszabalyok_count": stop_jogszabalyok_len,
+            "stop_jogszabalyok_count": len(stop_jogszabalyok_set),
+            "stop_jogszabalyok_list": sorted(list(stop_jogszabalyok_set)),
             "relation_types": sorted(list(relation_types))
         }
 
@@ -213,8 +214,8 @@ def parse_args():
     parser.add_argument(
         "--stopword-threshold",
         type=float,
-        default=0.005,  # Default to 0.5%
-        help="Threshold percentage (0.0 to 1.0) for determining stop jogszabalyok (default: 0.005 = 0.5%)"
+        default=0.01,  # Default to 1%
+        help="Threshold percentage (0.0 to 1.0) for determining stop jogszabalyok (default: 0.01 = 1%)"
     )
     parser.add_argument(
         "--stopword-column",
@@ -250,7 +251,7 @@ def main():
 
     # Save outputs
     save_graph(G, args.output_json, args.output_graphml)
-    save_graph_metadata(G, len(stop_jogszabalyok), args.output_metadata)
+    save_graph_metadata(G, stop_jogszabalyok, args.output_metadata)
     logging.info("Graph building process finished.")
 
 if __name__ == "__main__":

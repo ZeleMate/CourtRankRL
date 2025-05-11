@@ -49,6 +49,7 @@ OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
 OPENAI_EMBEDDING_DIMENSION = 1536
 OPENAI_EMBEDDING_BATCH_SIZE = 100
 OPENAI_EMBEDDING_MAX_TOKENS = 8191 # Maximális token szám a beágyazási modellhez
+OPENAI_API_REQUEST_MAX_TOKENS = 300000 # Maximális token szám egy API kérésben
 # Load API key from environment variable
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
