@@ -150,6 +150,24 @@ def main():
             df = df.dropna(subset=['embedding']).reset_index(drop=True)
             logging.info(f"Szűrés után maradt {len(df)} dokumentum")
         
+        # Dimenzió ellenőrzés és szűrés a stackelés előtt
+        if not df.empty:
+            original_count = len(df)
+            # Biztonságos hossz ellenőrzés: csak listákra/tömbökre alkalmazzuk
+            df['embedding_len'] = df['embedding'].apply(lambda x: len(x) if isinstance(x, (list, np.ndarray)) else 0)
+            
+            mismatched_dims = df[df['embedding_len'] != EMBEDDING_DIMENSION]
+            if not mismatched_dims.empty:
+                logging.warning(f"{len(mismatched_dims)} sor eltávolítva a nem megfelelő embedding dimenzió miatt.")
+                logging.debug(f"Példák a hibás dimenziójú sorokból (doc_id, embedding hossza): {mismatched_dims[['doc_id', 'embedding_len']].head().to_dict('records')}")
+                df = df[df['embedding_len'] == EMBEDDING_DIMENSION]
+
+            df = df.drop(columns=['embedding_len'])
+
+        if df.empty:
+            logging.error("Nincsenek érvényes embeddingek a szűrés után. Leállás.")
+            raise SystemExit("Nincs feldolgozható adat a dimenzióellenőrzés után.")
+
         # ID-leképezés létrehozása
         id_mapping = dict(enumerate(df['doc_id']))
         
