@@ -1,141 +1,163 @@
-Graph-Augmented Semantic Search for Court Decision Retrieval
+# Intelligens Kereső és Rangsoroló Rendszer Bírósági Határozatokhoz
 
-Projekt leírása
----------------
-A projekt célja egy intelligens keresőrendszer fejlesztése, amely bírósági határozatok szemantikai alapú visszakeresését támogatja.
-A rendszer transzformer-alapú szövegembeddingeket alkalmaz a bírósági dokumentumok mély jelentésbeli reprezentációjához,
-és a dokumentumok közötti kapcsolatok feltérképezésére gráfalapú modellezést használ.
-A találatok rangsorolását megerősítéses tanulási (Reinforcement Learning) technikával finomítja.
+A projekt egy komplex, szemantikus keresőrendszert valósít meg magyar nyelvű bírósági határozatok visszakeresésére és intelligens rangsorolására. A rendszer a legmodernebb természetesnyelv-feldolgozási (NLP) és gépi tanulási technikákat alkalmazza, hogy a hagyományos, kulcsszó-alapú keresőknél pontosabb és relevánsabb találatokat biztosítson.
 
-Mappastruktúra
---------------
-/Szakdolgozat
-├── /configs
-│   └── config.py
-├── /data_loader
-│   ├── preprocess_documents.py
-│   ├── generate_embeddings.py
-│   ├── graph_builder.py
-│   ├── build_faiss_index.py
-│   └── eda_clean_for_embedding.py
-├── /models
-│   └── embedding.py
-├── /reinforcement_learning
-│   ├── train_agent.py
-│   ├── evaluate_agent.py
-│   ├── agent.py
-│   ├── environment.py
-│   └── reward_models/
-├── /notebooks
-│   ├── eda_birosagi_hatarozatok.ipynb
-│   ├── keresoproto_terv.ipynb
-│   ├── EDA_birosagi_embeddingek.ipynb
-│   └── graph_analysis.ipynb
-├── /processed_data
-│   ├── raw_data_for_eda.csv
-│   └── embedded_data.parquet
-├── /logs
-│   └── run_log.txt
-├── /data
-│   └── (Eredeti RTF/DOCX és JSON fájlok)
-/README.txt
+A megoldás lelke egy kétlépcsős keresési folyamat:
+1.  **Szemantikus Keresés:** A dokumentumok és a keresési kifejezés jelentésrétegét is megérti, és a tartalmi hasonlóság alapján adja vissza a legrelevánsabb dokumentumokat.
+2.  **Megerősítéses Tanuláson (RL) Alapuló Újrarangsorolás:** Egy tanított RL ágens tovább finomítja a találati listát, figyelembe véve a dokumentumok közötti komplex kapcsolatokat és a jogi relevancia finomabb árnyalatait.
 
-Telepítési követelmények
-------------------------
-- Python 3.10 vagy újabb
-- OpenAI API kulcs szükséges az embeddingek generálásához
+## Architektúra
 
-Telepítendő csomagok:
-pip install pandas openai tqdm pyarrow networkx matplotlib seaborn python-dotenv faiss-cpu backoff torch scikit-learn
+A rendszer moduláris felépítésű, amely több, jól definiált komponensből áll. Az alábbi diagram a teljes adatfeldolgozási és keresési folyamatot szemlélteti.
 
-(Később opcionálisan HuggingFace TRL is szükséges lehet az RL modulhoz.)
+```mermaid
+graph TD
+    subgraph "Adatforrások"
+        A["Bírósági Határozatok (.rtf, .docx)"]
+    end
 
-Konfiguráció
-------------
-- /configs/config.py fájlban adható meg:
-  - Bemeneti adatok elérési útja
-  - OpenAI API kulcs
-  - Embedding modell (text-embedding-3-small)
-  - Batch méret
-  - Kimeneti fájlok helye
-  - Naplózás beállításai
+    subgraph "1. Előfeldolgozás és Indexelés"
+        B["Dokumentumok Beolvasása és Tisztítása"] --> C["Szövegrészekre Bontás"]
+        C --> D["OpenAI API hívás"]
+        D --> E["Embedding Vektorok Generálása"]
+        E --> F["Vektorok Tárolása (FAISS)"]
+        E --> G["Metaadatok Elemzése"]
+        G --> H["Tudásgráf Építése (Neo4j)"]
+    end
 
-Használati lépések
-------------------
-1. Nyers adatok feldolgozása:
-   python data_loader/preprocess_documents.py
+    subgraph "2. Keresési Folyamat"
+        I["Keresési Kifejezés"] --> J["Keresés Embedding Generálása"]
+        J --> K["1. Szint: Szemantikai Keresés (FAISS)"]
+        K --> L["Top-K Hasonló Dokumentum"]
+    end
+    
+    subgraph "3. RL-alapú Újrarangsorolás"
+        L --> M["RL Agent (GRPO)"]
+        M --> N["Találatok Újrarangsorolása"]
+        N --> O["Végleges Találati Lista"]
+    end
 
-2. Adatok tisztítása embedding generálás előtt:
-   python data_loader/eda_clean_for_embedding.py
+    A --> B
+    F --> K
+    H -.-> M
+    I --> J
 
-3. Embeddingek generálása:
-   python data_loader/generate_embeddings.py
+style D fill:#4CAF50,stroke:#333,stroke-width:2px,color:#fff
+style H fill:#2196F3,stroke:#333,stroke-width:2px,color:#fff
+style F fill:#2196F3,stroke:#333,stroke-width:2px,color:#fff
+style M fill:#FFC107,stroke:#333,stroke-width:2px,color:#000
+style O fill:#4CAF50,stroke:#333,stroke-width:2px,color:#fff
+```
 
-4. FAISS index építése:
-   python data_loader/build_faiss_index.py
+## Főbb Jellemzők
 
-5. Gráf építése NetworkX segítségével:
-   python data_loader/graph_builder.py
+- **Szemantikus Szövegfeldolgozás:** Transzformer-alapú `text-embedding-3-small` modell (OpenAI) a szövegek mély kontextuális megértéséhez.
+- **Nagy Sebességű Keresés:** A `FAISS` (Facebook AI Similarity Search) könyvtár villámgyors hasonlósági keresést tesz lehetővé több millió dokumentum között is.
+- **Tudásgráf-alapú Modellezés:** A `NetworkX` és `Neo4j` segítségével a rendszer feltérképezi a dokumentumok, hivatkozások és jogi entitások közötti kapcsolatokat, ami mélyebb elemzési lehetőségeket nyit meg.
+- **Intelligens Rangsorolás:** Megerősítéses tanulási (Reinforcement Learning) ágens (GRPO algoritmus) optimalizálja a találatok sorrendjét a maximális relevancia érdekében.
+- **Moduláris és Skálázható:** A komponensek lazán csatoltak, ami lehetővé teszi a könnyű továbbfejlesztést és skálázást.
+- **Automatizált Adatfeldolgozás:** A teljes folyamat a nyers dokumentumoktól a kész indexig szkriptekkel automatizált.
 
-6. Exploratory Data Analysis (EDA) - Eredeti adatok:
-   jupyter notebook notebooks/eda_birosagi_hatarozatok.ipynb
+## Technológiai Készlet
 
-7. Exploratory Data Analysis (EDA) - Embeddingek:
-   jupyter notebook notebooks/EDA_birosagi_embeddingek.ipynb
+- **Programozási nyelv:** Python 3.10+
+- **NLP / ML:** PyTorch, Transformers, Scikit-learn
+- **Embeddingek:** OpenAI API (`text-embedding-3-small`)
+- **Vektor Adatbázis:** FAISS
+- **Gráf Adatbázis:** Neo4j (a `graph_builder.py` által generált adatokkal feltölthető)
+- **Adatkezelés:** Pandas, NumPy, PyArrow
+- **Segédprogramok:** TQDM, python-dotenv, backoff
 
-8. Gráf Analízis:
-   jupyter notebook notebooks/graph_analysis.ipynb
+## Telepítés és Beüzemelés
 
-9. Kereső prototípus tervezése/tesztelése:
-   jupyter notebook notebooks/keresoproto_terv.ipynb
+1.  **Klónozza a repozitóriumot:**
+    ```bash
+    git clone https://github.com/docriny/Szakdolgozat.git
+    cd Szakdolgozat
+    ```
 
-10. Rangsortanulás (megerősítéses tanulás) - Agent tanítása:
-    python reinforcement_learning/train_agent.py
+2.  **Hozzon létre és aktiváljon egy virtuális környezetet:**
+    ```bash
+    python -m venv venv
+    source venv/bin/activate
+    # Windows-on: venv\Scripts\activate
+    ```
 
-11. Agent kiértékelése:
-    python reinforcement_learning/evaluate_agent.py
+3.  **Telepítse a szükséges csomagokat:**
+    A `requirements.txt` fájl tartalmazza az összes szükséges függőséget rögzített verziókkal a reprodukálhatóság érdekében.
+    ```bash
+    pip install -r requirements.txt
+    ```
 
-Megerősítéses tanulás és rangsortanulási modul
-----------------------------------------------
-A projekt célja, hogy a keresési találatok rangsorát megerősítéses tanulással optimalizálja.
+4.  **Konfigurálja a környezeti változókat:**
+    Másolja le az `.env.example` fájlt `.env` néven.
+    ```bash
+    cp .env.example .env
+    ```
+    Ezután szerkessze az újonnan létrehozott `.env` fájlt, és adja meg a saját titkos kulcsait:
+    ```
+    # OpenAI API Key
+    OPENAI_API_KEY="ide_masold_az_openai_kulcsodat"
 
-- A rendszer egy trainelt RL agent segítségével képes lesz a kezdeti embedding-alapú rangsorokat jogi relevancia alapján továbbfinomítani.
-- Reward alapú tanulás történik: a jogi szakértők által értékelt találatok alapján.
-- Tervezett algoritmus: GRPO (Generalized Reward Policy Optimization).
-- Tervezett keretrendszer: saját PyTorch implementáció, vagy HuggingFace TRL.
+    # Neo4j Database Credentials
+    NEO4J_USER="neo4j"
+    NEO4J_PASSWORD="ide_masold_a_neo4j_jelszavadat"
+    ```
+    
+5. **Adatok elhelyezése:**
+   Helyezze a feldolgozandó `.rtf` és `.docx` bírósági határozatokat a `data/` mappába, a `config.py`-ban megadott struktúrát követve.
 
-Struktúra:
-- /reinforcement_learning/train_agent.py: agent tanítása.
-- /reinforcement_learning/evaluate_agent.py: agent teljesítményének mérése.
-- /reinforcement_learning/reward_models/: reward függvények tárolása.
+## Használat
 
-Technikai részletek
--------------------
-- Embedding modell: text-embedding-3-small (OpenAI)
-- Token limit figyelembevétele (max 8192 token/kérés)
-- OpenAI API hívások batch kezelése
-- Rate limit és API hibák automatikus kezelése
-- Gráf kezelése NetworkX-szel
-- Adatok tárolása .parquet és .graphml formátumban
-- Reinforcement Learning: PyTorch alapú tanító ciklus
-- Reward Model: jogi relevancia scoring függvény
+A projekt szkriptjei a `src/data_loader` és `src/reinforcement_learning` mappákban találhatók. A futtatásukat a projekt gyökérkönyvtárából javasolt végrehajtani az alábbi sorrendben:
 
-Költségbecslés
---------------
-- Python csomagok: 0 USD
-- OpenAI API használat: kb. 20–60 USD
-- Gráfkezelés (NetworkX): 0 USD
-- RL tanítás: helyi gépen (CPU) elegendő
-- Összes várható költség: max. 80–100 USD
+1.  **Dokumentumok előfeldolgozása:**
+    ```bash
+    python src/data_loader/preprocess_documents.py
+    ```
+2.  **Adatok tisztítása (opcionális, de javasolt):**
+    ```bash
+    python src/data_loader/eda_clean_for_embedding.py
+    ```
+3.  **Embeddingek generálása:**
+    ```bash
+    python src/data_loader/generate_embeddings.py
+    ```
+4.  **FAISS index építése:**
+    ```bash
+    python src/data_loader/build_faiss_index.py
+    ```
+5.  **Gráf építése:**
+    ```bash
+    python src/data_loader/graph_builder.py
+    ```
+6.  **RL ágens tanítása:**
+    ```bash
+    python src/reinforcement_learning/train_agent.py
+    ```
 
-Jövőbeli fejlesztések
----------------------
-- Gráf-alapú keresési bővítések
-- Rangsortanulás (agent finomhangolása új reward modellel)
-- Kereső prototípus fejlesztése webes felületen (pl. Streamlit)
+## Projekt Felépítése
 
-Kapcsolat
----------
-Szakdolgozatkészítő: Dr. Zelenyiánszki Máté
-Témavezető: Gombás Veronika, Dr. Kummer Alex
-Intézmény: Pannon Egyetem, Mérnöki Kar
+```
+Szakdolgozat/
+├── configs/              # Konfigurációs fájlok
+├── data/                 # Nyers adatok helye (a .gitignore-ban kizárva)
+├── notebooks/            # Jupyter notebookok exploratív adatelemzéshez
+├── processed_data/       # Feldolgozott adatok (CSV, Parquet, GML) (kizárva)
+├── src/                  # A projekt forráskódja
+│   ├── data_loader/      # Adatbetöltő és feldolgozó szkriptek
+│   ├── reinforcement_learning/ # RL-alapú rangsoroló modul
+│   └── search/           # Keresési logika
+├── .env.example          # Környezeti változók sablonja
+├── .gitignore            # Verziókezelésből kizárt fájlok listája
+├── requirements.txt      # Projekt függőségek
+└── README.md             # Ez a dokumentum
+```
+
+## Jövőbeli Fejlesztési Irányok
+
+- **Webes Felület:** Egy interaktív, felhasználóbarát keresőfelület készítése (pl. Streamlit vagy Flask segítségével).
+- **Gráfalapú Keresés:** A tudásgráf aktívabb bevonása a keresési folyamatba a komplex, több lépcsős lekérdezések támogatásához.
+- **Alternatív Modellek:** Más embedding modellek (akár nyílt forráskódú, saját gépen futtatható) és RL algoritmusok kipróbálása és összehasonlítása.
+- **Online Tanulás:** Az RL ágens folyamatos finomhangolása a felhasználói visszajelzések alapján.
+- **Teljesítményoptimalizálás:** A teljes pipeline sebességének és erőforrás-hatékonyságának további javítása.
