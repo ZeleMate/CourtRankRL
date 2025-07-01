@@ -1,4 +1,4 @@
-# Magyar Bírósági Határozatok End-to-End Szemantikus Keresőrendszere Megerősítéses Tanulással
+# Magyar Bírósági Határozatok Szemantikus Keresőrendszere Megerősítéses Tanulással
 
 ## Szakdolgozat Áttekintés
 
@@ -14,52 +14,52 @@ A következő diagram ábrázolja a teljes end-to-end rendszer működését a f
 
 ```mermaid
 graph TD
-    A["Felhasználó<br/>Szabadszöveges lekérdezés"] --> B["Query Preprocessing<br/>Szöveg normalizálás<br/>Tokenizálás"]
+    A["Felhasználó"] --> B["Query Preprocessing"]
     
-    B --> C["Embedding Generálás<br/>Qwen3-8B modell<br/>Query → 8192D vektor"]
+    B --> C["Embedding Generálás"]
     
-    C --> D["FAISS Index Keresés<br/>Approximate NN search<br/>Top-K jelöltek"]
+    C --> D["FAISS Index Keresés"]
     
-    D --> D1["Gráf Alapú Bővítés<br/>Kapcsolódó dokumentumok<br/>Graph traversal"]
+    D --> D1["Gráf Alapú Bővítés"]
     
-    D1 --> E["Hibrid Ranking<br/>Szemantikus + Gráf<br/>alapú sorrend"]
+    D1 --> E["Hibrid Ranking"]
     
-    E --> F["RL Agent<br/>RankingPolicyNetwork<br/>State: Query+Docs+Graph embedding"]
+    E --> F["RL Agent"]
     
-    F --> G["Re-ranking<br/>Pontszámok generálása<br/>Optimalizált sorrend"]
+    F --> G["Re-ranking"]
     
-    G --> H["Végső Találati Lista<br/>Releváns dokumentumok<br/>rangsorolt listája"]
+    G --> H["Végső Találati Lista"]
     
-    H --> I["Felhasználó<br/>Eredmények megjelenítése"]
+    H --> I["Felhasználó"]
     
-    H --> J["Szakértői Értékelés<br/>Relevancia pontszámok<br/>NDCG@5, NDCG@10"]
+    H --> J["Szakértői Értékelés"]
     
-    J --> K["Reward Számítás<br/>NDCG javulás<br/>vs. baseline"]
+    J --> K["Reward Számítás"]
     
-    K --> L["RL Training<br/>GRPO/Policy Gradient<br/>Policy frissítés"]
+    K --> L["RL Training"]
     
     L --> F
     
     subgraph "Adatfeldolgozási Réteg"
-        M["Nyers Dokumentumok<br/>213,398 határozat"]
-        N["Preprocessing<br/>Szöveg tisztítás<br/>Metaadat kinyerés"]
-        O["Strukturált Adatok<br/>CSV/Parquet formátum"]
+        M["Nyers Dokumentumok"]
+        N["Preprocessing"]
+        O["Strukturált Adatok"]
         M --> N --> O
     end
     
     subgraph "Embedding Réteg"
-        P["Batch Processing<br/>Chunk-alapú feldolgozás"]
-        Q["Qwen3-8B Modell<br/>8192 dimenziós embeddings<br/>A100 80GB GPU"]
-        R["Vektor Adatbázis<br/>FAISS index tárolás"]
+        P["Batch Processing"]
+        Q["Qwen3-8B Modell"]
+        R["Vektor Adatbázis"]
         O --> P --> Q --> R
         R --> D
     end
     
     subgraph "Gráf Réteg"
-        V["Dokumentum Kapcsolatok<br/>1.6M csomópont, 4.4M él"]
-        W["Hivatkozási Hálózat<br/>Határozatok közötti links"]
-        X["Jogszabály Kapcsolatok<br/>Dokumentum-jogszabály hivatkozások"]
-        Y["Bírósági Kapcsolatok<br/>Dokumentum-bíróság kapcsolatok"]
+        V["Dokumentum Kapcsolatok"]
+        W["Hivatkozási Hálózat"]
+        X["Jogszabály Kapcsolatok"]
+        Y["Bírósági Kapcsolatok"]
         O --> V
         V --> W
         V --> X
@@ -70,9 +70,9 @@ graph TD
     end
     
     subgraph "RL Optimalizálás"
-        S["Training Environment<br/>RankingEnv (Gymnasium)"]
-        T["Policy Network<br/>Neural Network<br/>Input→Hidden→Output"]
-        U["Reward Model<br/>NDCG kalkuláció<br/>Expert evaluations"]
+        S["Training Environment"]
+        T["Policy Network"]
+        U["Reward Model"]
         S --> T --> U --> L
     end
     
