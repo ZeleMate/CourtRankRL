@@ -8,7 +8,7 @@ import networkx as nx
 import json
 from tqdm import tqdm
 import logging
-from collections import Counter
+from collections import Counter, defaultdict
 from datetime import datetime, timezone
 
 # Loggolás alapbeállítása (a config.py felülírhatja, ha ott is van basicConfig)
@@ -54,10 +54,15 @@ def is_valid_doc_id(doc_id):
 # --- Fő gráfépítő logika ---
 
 def build_graph(df, stop_jogszabalyok):
-    """Felépíti a NetworkX gráfot a bemeneti DataFrame alapján."""
+    """Felépíti a NetworkX gráfot a bemeneti DataFrame alapján - optimalizált verzió."""
     G = nx.DiGraph() # Irányított gráf létrehozása
-    logging.info("Gráfépítés megkezdése...")
+    logging.info("Optimalizált gráfépítés megkezdése...")
 
+    # Batch műveletek előkészítése
+    batch_nodes = []
+    batch_edges = []
+    edge_weights = defaultdict(int)
+    
     for _, doc_data in tqdm(df.iterrows(), total=df.shape[0], desc="Gráf építése"): # tqdm progress bar
         doc_id = doc_data.get('doc_id')
         if not is_valid_doc_id(doc_id):
@@ -69,52 +74,60 @@ def build_graph(df, stop_jogszabalyok):
         kapcsolodo_hatarozatok = parse_list_string(doc_data.get('KapcsolodoHatarozatok', ''))
         kapcsolodo_birosagok = parse_list_string(doc_data.get('AllKapcsolodoBirosag', ''))
         
-        # Dokumentum csomópont hozzáadása metaadatokkal
+        # Dokumentum csomópont batch-hez
         node_attrs = {
             "type": "dokumentum",
             "jogterulet": doc_data.get('jogterulet') if pd.notna(doc_data.get('jogterulet')) else None,
             "birosag": doc_data.get('birosag') if pd.notna(doc_data.get('birosag')) else None,
             "ev": int(doc_data.get('HatarozatEve')) if pd.notna(doc_data.get('HatarozatEve')) and str(doc_data.get('HatarozatEve')).isdigit() else None,
         }
-        node_attrs = {k: v for k, v in node_attrs.items() if v is not None} # Csak a nem None attribútumok
-        
-        if not G.has_node(doc_id):
-            G.add_node(doc_id, **node_attrs)
-        else: # Ha a csomópont már létezik (pl. egy hivatkozás miatt), frissítjük az attribútumait
-            nx.set_node_attributes(G, {doc_id: {**G.nodes[doc_id], **node_attrs}})
+        node_attrs = {k: v for k, v in node_attrs.items() if v is not None}
+        batch_nodes.append((doc_id, node_attrs))
 
-        def add_or_increment_edge(u, v, rel_type):
-            """Hozzáad egy élt vagy növeli a súlyát, ha már létezik."""
-            if G.has_edge(u, v):
-                G[u][v]['weight'] += 1
-            else:
-                G.add_edge(u, v, relation_type=rel_type, weight=1)
-
-        # Hivatkozások hozzáadása más határozatokra
+        # Hivatkozások batch-hez
         for hatarozat_id in kapcsolodo_hatarozatok:
             if is_valid_doc_id(hatarozat_id):
-                if not G.has_node(hatarozat_id): # Ha a hivatkozott csomópont még nem létezik
-                    G.add_node(hatarozat_id, type="dokumentum") # Alapértelmezett típussal
-                add_or_increment_edge(doc_id, hatarozat_id, "hivatkozik")
+                batch_nodes.append((hatarozat_id, {"type": "dokumentum"}))
+                edge_key = (doc_id, hatarozat_id, "hivatkozik")
+                edge_weights[edge_key] += 1
 
-        # Bírósági kapcsolatok hozzáadása
+        # Bírósági kapcsolatok batch-hez
         for birosag_name in kapcsolodo_birosagok:
             if birosag_name and isinstance(birosag_name, str):
-                birosag_node_id = f"birosag_{birosag_name.lower().replace(' ', '_')}" # Normalizált bíróság ID
-                if not G.has_node(birosag_node_id):
-                    G.add_node(birosag_node_id, type="birosag", name=birosag_name)
-                add_or_increment_edge(doc_id, birosag_node_id, "targyalta")
+                birosag_node_id = f"birosag_{birosag_name.lower().replace(' ', '_')}"
+                batch_nodes.append((birosag_node_id, {"type": "birosag", "name": birosag_name}))
+                edge_key = (doc_id, birosag_node_id, "targyalta")
+                edge_weights[edge_key] += 1
 
-        # Jogszabályhelyek kezelése
+        # Jogszabályhelyek batch-hez
         for jsz in jogszabalyhelyek:
-            if jsz and isinstance(jsz, str) and jsz not in stop_jogszabalyok: # Stop-lista ellenőrzése
-                # Jogszabály csomópont ID normalizálása
+            if jsz and isinstance(jsz, str) and jsz not in stop_jogszabalyok:
                 jsz_node_id = f"jogszabaly_{jsz.lower().replace(' ', '_').replace('.', '').replace('§', 'par').replace('(', '').replace(')', '')}"
-                if not G.has_node(jsz_node_id):
-                    G.add_node(jsz_node_id, type="jogszabaly", reference=jsz)
-                add_or_increment_edge(doc_id, jsz_node_id, "hivatkozik_jogszabalyra")
+                batch_nodes.append((jsz_node_id, {"type": "jogszabaly", "reference": jsz}))
+                edge_key = (doc_id, jsz_node_id, "hivatkozik_jogszabalyra")
+                edge_weights[edge_key] += 1
 
-    logging.info(f"Gráfépítés befejezve. Csomópontok száma: {G.number_of_nodes()}, Élek száma: {G.number_of_edges()}")
+    # Batch csomópont hozzáadás - duplikátumok kezelése
+    logging.info("Csomópontok batch hozzáadása...")
+    unique_nodes = {}
+    for node_id, attrs in batch_nodes:
+        if node_id in unique_nodes:
+            # Attribútumok egyesítése
+            unique_nodes[node_id].update({k: v for k, v in attrs.items() if v is not None})
+        else:
+            unique_nodes[node_id] = attrs
+    
+    G.add_nodes_from(unique_nodes.items())
+
+    # Batch él hozzáadás súlyokkal
+    logging.info("Élek batch hozzáadása...")
+    edges_with_attrs = []
+    for (u, v, rel_type), weight in edge_weights.items():
+        edges_with_attrs.append((u, v, {"relation_type": rel_type, "weight": weight}))
+    
+    G.add_edges_from(edges_with_attrs)
+
+    logging.info(f"Optimalizált gráfépítés befejezve. Csomópontok száma: {G.number_of_nodes()}, Élek száma: {G.number_of_edges()}")
     return G
 
 def save_graph(G, json_path, graphml_path):
