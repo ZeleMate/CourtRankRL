@@ -43,15 +43,17 @@ DATA_PROCESSING_CHUNK_SIZE = 500 # Feldolgozási egység mérete a fájlbejárá
 SUPPORTED_TEXT_EXTENSIONS = ['.docx', '.rtf']
 
 # ------------------------------------------------------------------
-# OpenAI Embedding beállítások (generate_embeddings.py)
+# Qwen3-Embedding-8B beállítások (generate_embeddings.py)
+# A projekt egyetlen embedding modellje cloud GPU környezetben
 # ------------------------------------------------------------------
-OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
-OPENAI_EMBEDDING_DIMENSION = 1536
-OPENAI_EMBEDDING_BATCH_SIZE = 100
-OPENAI_EMBEDDING_MAX_TOKENS = 8191 # Maximális token szám a beágyazási modellhez
-OPENAI_API_REQUEST_MAX_TOKENS = 300000 # Maximális token szám egy API kérésben
-# Load API key from environment variable
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-8B"
+EMBEDDING_DIMENSION = 8192
+EMBEDDING_BATCH_SIZE = 8
+EMBEDDING_MAX_TOKENS = 8192
+EMBEDDING_API_REQUEST_MAX_TOKENS = 300000
+
+# Cloud GPU optimalizált konfiguráció
+# Platform: RunPod A100 80GB GPU
 
 # ------------------------------------------------------------------
 # FAISS Index Beállítások (build_faiss_index.py)
@@ -66,7 +68,7 @@ EMBEDDING_OUTPUT_COLUMNS = [
     'jogterulet',
     'hatarozat_id_mappa',
     'text',
-    'embedding', # OpenAI embedding vektor
+    'embedding', # Qwen3-8B embedding vektor (8192 dimenzió)
     'metadata_json',
     # Ide jöhetnek további oszlopok a CSV-ből, ha szükségesek
 ]
@@ -97,8 +99,7 @@ CLEANING_MIN_TEXT_LENGTH = 50 # Minimális szöveghossz a tisztításhoz
 # ------------------------------------------------------------------
 # Egyéb beállítások (pl. modell, keresés, gráf DB, RL - ezek már itt voltak)
 # ------------------------------------------------------------------
-EMBEDDING_MODEL_NAME = OPENAI_EMBEDDING_MODEL
-EMBEDDING_DIMENSION = OPENAI_EMBEDDING_DIMENSION
+EMBEDDING_MODEL_NAME = EMBEDDING_MODEL
 INITIAL_TOP_K = 20
 FINAL_TOP_K = 5
 GRAPH_DB_URI = "bolt://localhost:7687"
@@ -120,12 +121,7 @@ GRAPH_SCHEMA_PATH = "configs/graph_schema.json"
 EXPERT_EVAL_PATH = "data/expert_evaluations.csv"
 RL_AGENT_SAVE_PATH = "models/rl_agent.pt"
 
-# Figyelmeztetés, ha az API kulcs nincs beállítva
-if not OPENAI_API_KEY:
-    print("Warning: OPENAI_API_KEY is not set as an environment variable. Please ensure it is defined in your .env file or environment.")
-else:
-    # Optional: Print a confirmation that the key is loaded, but mask the actual key
-    print("OpenAI API Key loaded successfully from environment.")
+# Qwen3-Embedding-8B modell használata cloud GPU környezetben
 
 print(f"Konfiguráció betöltve. Projekt gyökér: {PROJECT_ROOT}")
 print(f"Adat könyvtár: {DATA_DIR}")
@@ -133,4 +129,6 @@ print(f"Kimeneti könyvtár: {OUT_DIR}")
 print(f"Nyers adat CSV: {RAW_CSV_DATA_PATH}")
 print(f"Tisztított adat CSV: {CLEANED_CSV_DATA_PATH}") # Kiíratás hozzáadása
 print(f"Feldolgozott Parquet: {PROCESSED_PARQUET_DATA_PATH}")
-print(f"OpenAI Embedding modell: {OPENAI_EMBEDDING_MODEL}")
+print(f"Embedding modell: {EMBEDDING_MODEL}")
+print(f"Embedding dimenzió: {EMBEDDING_DIMENSION}")
+print(f"Maximális token szám: {EMBEDDING_MAX_TOKENS}")
