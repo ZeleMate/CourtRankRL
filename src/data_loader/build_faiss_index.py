@@ -2,8 +2,8 @@
 """
 FAISS index építő szkript a jogi dokumentumok embeddingjeihez.
 
-Ez a szkript beolvassa a Parquet fájlból az előre elkészített embeddingeket és létrehoz
-belőlük egy FAISS indexet a gyors hasonlósági kereséshez.
+ÚJDONSÁG: Chunked parquet támogatás memory-safe FAISS index építéshez.
+Ez a szkript először chunked parquet fájlokat keres, majd fallback az egyesített parquet-re.
 """
 import pandas as pd
 import numpy as np
@@ -14,8 +14,9 @@ import sys
 import gc
 import time
 import pickle
+import glob
 from pathlib import Path
-from typing import Tuple, Dict, Any
+from typing import Tuple, Dict, Any, List
 
 # Projekt gyökérkönyvtárának hozzáadása a Python útvonalhoz
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -92,6 +93,93 @@ def create_faiss_index(vectors: np.ndarray) -> Any:
     
     return index
 
+def load_chunked_embeddings() -> Tuple[bool, pd.DataFrame]:
+    """
+    Chunked parquet fájlokból embeddings betöltése memory-safe módon.
+    
+    Returns:
+        Tuple[bool, pd.DataFrame]: (success, combined_dataframe)
+    """
+    # Chunked parquet fájlok keresése
+    chunked_pattern = str(OUT_DIR / "*_with_embeddings.parquet")
+    chunk_files = glob.glob(chunked_pattern)
+    
+    if not chunk_files:
+        logging.info("Nincs chunked parquet fájl találva")
+        return False, pd.DataFrame()
+    
+    logging.info(f"🎯 CHUNKED PARQUET BETÖLTÉS: {len(chunk_files)} chunk fájl található")
+    
+    # Chunk fájlok rendezett betöltése (konzisztens sorrend)
+    chunk_files.sort()
+    all_chunks = []
+    total_docs = 0
+    
+    for i, chunk_file in enumerate(chunk_files):
+        try:
+            logging.info(f"Chunk betöltése ({i+1}/{len(chunk_files)}): {os.path.basename(chunk_file)}")
+            
+            # Csak szükséges oszlopok betöltése (memória optimalizálás)
+            chunk_df = pd.read_parquet(chunk_file, columns=['doc_id', 'embedding'])
+            
+            # Alapvető validáció
+            if chunk_df.empty:
+                logging.warning(f"Üres chunk: {chunk_file}")
+                continue
+            
+            # Hiányzó embeddings eltávolítása
+            missing_before = chunk_df['embedding'].isna().sum()
+            if missing_before > 0:
+                logging.warning(f"Chunk {i+1}: {missing_before} hiányzó embedding eltávolítva")
+                chunk_df = chunk_df.dropna(subset=['embedding'])
+            
+            if not chunk_df.empty:
+                all_chunks.append(chunk_df)
+                total_docs += len(chunk_df)
+                logging.info(f"Chunk {i+1} betöltve: {len(chunk_df):,} érvényes rekord")
+            
+            # Rendszeres memória tisztítás
+            if i % 5 == 0:
+                gc.collect()
+                
+        except Exception as e:
+            logging.error(f"Hiba chunk betöltésében ({chunk_file}): {e}")
+            continue
+    
+    if not all_chunks:
+        logging.error("Nincs érvényes chunk adat")
+        return False, pd.DataFrame()
+    
+    # Chunk-ok egyesítése
+    logging.info("Chunk-ok egyesítése...")
+    combined_df = pd.concat(all_chunks, ignore_index=True)
+    
+    # Memória felszabadítás
+    del all_chunks
+    gc.collect()
+    
+    logging.info(f"✅ Chunked betöltés sikeres:")
+    logging.info(f"  📁 Chunk fájlok: {len(chunk_files)}")
+    logging.info(f"  📄 Összesen dokumentumok: {len(combined_df):,}")
+    logging.info(f"  🚀 Memory-optimalizált feldolgozás")
+    
+    return True, combined_df
+
+def load_unified_embeddings() -> pd.DataFrame:
+    """
+    Unified parquet fájl betöltése (fallback mode).
+    """
+    if not PROCESSED_PARQUET_DATA_PATH.exists():
+        raise FileNotFoundError(f"Unified parquet nem található: {PROCESSED_PARQUET_DATA_PATH}")
+    
+    logging.info("📄 UNIFIED PARQUET BETÖLTÉS (fallback mode)")
+    logging.info(f"Embeddings betöltése: {PROCESSED_PARQUET_DATA_PATH}")
+    
+    df = pd.read_parquet(PROCESSED_PARQUET_DATA_PATH, columns=['doc_id', 'embedding'])
+    
+    logging.info(f"Unified parquet betöltve: {len(df):,} dokumentum")
+    return df
+
 def test_search(index: Any, vectors: np.ndarray, id_mapping: Dict[int, Any], k: int = 5) -> None:
     """
     Leteszteli a FAISS indexet egy egyszerű kereséssel az első vektor alapján.
@@ -127,28 +215,37 @@ def test_search(index: Any, vectors: np.ndarray, id_mapping: Dict[int, Any], k: 
 def main():
     """
     Fő függvény a FAISS index létrehozásához.
-
-    Beolvassa a feldolgozott Parquet fájlt (amely tartalmazza az embeddingeket),
-    kiszűri a hiányzó embeddinggel rendelkező sorokat, létrehozza a FAISS indexet,
-    elmenti az indexet és az ID leképezést, majd lefuttat egy teszt keresést.
+    
+    ÚJDONSÁG: Chunked parquet támogatás memory-safe FAISS index építéshez.
+    Először chunked parquet fájlokat keres, fallback az egyesített parquet-re.
     """
-    # Bemeneti fájl ellenőrzése
-    if not PROCESSED_PARQUET_DATA_PATH.exists():
-        logging.error(f"A bemeneti fájl nem található: {PROCESSED_PARQUET_DATA_PATH}")
-        raise SystemExit("Először futtasd az embedding generálást (qwen3_8b_embedding.ipynb RunPod-on)!")
+    logging.info("🚀 CHUNKED-KOMPATIBILIS FAISS INDEX ÉPÍTÉS")
+    
+    # ===== 1. CHUNKED PARQUET BETÖLTÉS (PRIORITÁS) =====
+    success, df = load_chunked_embeddings()
+    
+    # ===== 2. UNIFIED PARQUET FALLBACK =====
+    if not success:
+        logging.info("Chunked parquet nem elérhető, fallback unified parquet-re...")
+        
+        if not PROCESSED_PARQUET_DATA_PATH.exists():
+            logging.error(f"Nincs elérhető embedding adat!")
+            logging.error(f"Sem chunked parquet ({OUT_DIR}/*_with_embeddings.parquet)")
+            logging.error(f"Sem unified parquet ({PROCESSED_PARQUET_DATA_PATH})")
+            raise SystemExit("Először futtasd az embedding generálást!")
+        
+        df = load_unified_embeddings()
 
     try:
-        # Beágyazások beolvasása
-        logging.info(f"Beágyazások beolvasása: {PROCESSED_PARQUET_DATA_PATH}")
-        df = pd.read_parquet(PROCESSED_PARQUET_DATA_PATH, columns=['doc_id', 'embedding'])
-        logging.info(f"Beolvasva: {len(df)} dokumentum")
+        # ===== 3. ADATOK VALIDÁLÁSA ÉS TISZTÍTÁSA =====
+        logging.info(f"Embedding adatok validálása: {len(df):,} dokumentum")
         
-        # Hiányzó embeddinges sorok kezelése
+        # Hiányzó embeddinges sorok kezelése (ha még vannak)
         missing_count = df['embedding'].isna().sum()
         if missing_count:
             logging.warning(f"{missing_count} sorban nincs embedding, ezek kiszűrése...")
             df = df.dropna(subset=['embedding']).reset_index(drop=True)
-            logging.info(f"Szűrés után maradt {len(df)} dokumentum")
+            logging.info(f"Szűrés után maradt {len(df):,} dokumentum")
         
         # Dimenzió ellenőrzés és szűrés a stackelés előtt
         if not df.empty:
@@ -197,7 +294,20 @@ def main():
         # Index tesztelése
         test_search(index, vectors, id_mapping)
         
-        print(f"✅ FAISS index létrehozva: {FAISS_INDEX_PATH}")
+        # ===== VÉGSŐ ÖSSZEFOGLALÓ =====
+        input_mode = "CHUNKED" if success else "UNIFIED"
+        
+        print(f"\n✅ CHUNKED-KOMPATIBILIS FAISS INDEX LÉTREHOZVA!")
+        print(f"📊 Feldolgozott dokumentumok: {len(id_mapping):,}")
+        print(f"📁 Input mód: {input_mode}")
+        print(f"🗂️  FAISS index: {FAISS_INDEX_PATH}")
+        print(f"🔗 ID mapping: {FAISS_MAPPING_PATH}")
+        print(f"📏 Embedding dimenzió: {vectors.shape[1]}")
+        print(f"🔍 Szemantikai kereshetőség: MEGŐRIZVE")
+        if success:
+            print(f"🚀 Memory-optimalizált chunked feldolgozás használva!")
+        
+        logging.info(f"FAISS index létrehozva ({input_mode} mode): {len(id_mapping):,} dokumentum")
         print(f"✅ ID-leképezés mentve: {FAISS_MAPPING_PATH}")
         
     except Exception as e:

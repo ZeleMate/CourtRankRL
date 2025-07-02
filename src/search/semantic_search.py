@@ -46,9 +46,10 @@ class AdvancedHybridSearch:
     """Fejlett hibrid keresési motor: többrétegű pontszámítás és intelligens re-ranking."""
     
     def __init__(self, faiss_index_path: str, graph_path: str, embeddings_path: str, 
-                 document_metadata_path: Optional[str] = None):
+                 document_metadata_path: Optional[str] = None, enable_chunked_loading: bool = True):
         """
         Fejlett hibrid keresési motor inicializálása.
+        ÚJDONSÁG: Chunked embedding támogatás a szemantikai kereshetőség megőrzésével.
         """
         self.logger = logging.getLogger(__name__)
         
@@ -60,10 +61,10 @@ class AdvancedHybridSearch:
         self.logger.info(f"Gráf betöltése: {graph_path}")
         self.graph = self._load_graph(graph_path)
         
-        # Embedding metaadatok betöltése
-        self.logger.info(f"Embedding metaadatok betöltése: {embeddings_path}")
-        with open(embeddings_path, 'r', encoding='utf-8') as f:
-            self.embedding_metadata = json.load(f)
+        # ===== CHUNKED EMBEDDING METADATA BETÖLTÉSE =====
+        self.embedding_metadata = self._load_embedding_metadata_smart(
+            embeddings_path, enable_chunked_loading
+        )
         
         # Dokumentum metaadatok (opcionális)
         self.document_metadata = {}
@@ -97,6 +98,112 @@ class AdvancedHybridSearch:
         except Exception as e:
             self.logger.error(f"Hiba a gráf betöltése során: {e}")
             raise
+    
+    def _load_embedding_metadata_smart(self, embeddings_path: str, enable_chunked: bool) -> Dict:
+        """
+        Intelligens embedding metadata betöltés chunked támogatással.
+        
+        1. Elsőként chunked parquet fájlokat keres
+        2. Ha nincs, fallback az egyesített JSON-ra
+        3. Biztosítja a szemantikai kereshetőség megőrzését
+        """
+        # ===== 1. CHUNKED PARQUET KERESÉSE =====
+        if enable_chunked:
+            embeddings_dir = os.path.dirname(embeddings_path)
+            chunked_parquet_pattern = os.path.join(embeddings_dir, "*_with_embeddings.parquet")
+            
+            # Chunk parquet fájlok keresése
+            import glob
+            chunk_parquet_files = glob.glob(chunked_parquet_pattern)
+            
+            if chunk_parquet_files:
+                self.logger.info(f"🎯 CHUNKED PARQUET MÓD: {len(chunk_parquet_files)} embedding chunk található")
+                return self._load_from_chunked_parquet(chunk_parquet_files)
+        
+        # ===== 2. UNIFIED JSON FALLBACK =====
+        if os.path.exists(embeddings_path):
+            self.logger.info(f"📄 UNIFIED JSON MÓD: Fallback embedding JSON betöltése")
+            with open(embeddings_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        
+        # ===== 3. HIBA ESETÉN =====
+        raise FileNotFoundError(
+            f"Nincs elérhető embedding metadata! "
+            f"Sem chunked parquet ({chunked_parquet_pattern}), sem unified JSON ({embeddings_path})"
+        )
+    
+    def _load_from_chunked_parquet(self, chunk_files: List[str]) -> Dict:
+        """
+        Chunked parquet fájlokból embedding metadata konstruálása.
+        
+        KRITIKUS: Biztosítja, hogy a doc_id sorrend konzisztens legyen a FAISS index-szel!
+        """
+        import pandas as pd
+        
+        all_doc_ids = []
+        all_texts = []
+        all_metadata = []
+        
+        # Chunk fájlok rendezett betöltése (konzisztens sorrend biztosítása)
+        sorted_chunk_files = sorted(chunk_files)
+        
+        for chunk_file in sorted_chunk_files:
+            try:
+                self.logger.info(f"Chunk parquet betöltése: {os.path.basename(chunk_file)}")
+                df_chunk = pd.read_parquet(chunk_file)
+                
+                # Kötelező oszlopok ellenőrzése
+                required_cols = ['doc_id', 'text', 'embedding']
+                missing_cols = [col for col in required_cols if col not in df_chunk.columns]
+                if missing_cols:
+                    raise ValueError(f"Hiányzó oszlopok {chunk_file}-ban: {missing_cols}")
+                
+                # Adatok hozzáadása
+                all_doc_ids.extend(df_chunk['doc_id'].tolist())
+                all_texts.extend(df_chunk['text'].tolist())
+                
+                # Metadata JSON parse-olása
+                for _, row in df_chunk.iterrows():
+                    metadata_dict = {
+                        'doc_id': row['doc_id'],
+                        'text': row['text']
+                    }
+                    
+                    # Metadata JSON hozzáadása (ha van)
+                    if 'metadata_json' in row and pd.notna(row['metadata_json']):
+                        try:
+                            parsed_metadata = json.loads(str(row['metadata_json']))
+                            metadata_dict.update(parsed_metadata)
+                        except:
+                            pass  # Hibás JSON esetén alapértelmezett metadata
+                    
+                    # További oszlopok hozzáadása
+                    for col in df_chunk.columns:
+                        if col not in ['doc_id', 'text', 'embedding', 'metadata_json']:
+                            metadata_dict[col] = row[col] if pd.notna(row[col]) else None
+                    
+                    all_metadata.append(metadata_dict)
+                
+            except Exception as e:
+                self.logger.error(f"Hiba chunk parquet betöltésében ({chunk_file}): {e}")
+                continue
+        
+        # ===== METADATA STRUKTÚRA KONSTRUKCIÓ =====
+        embedding_metadata = {
+            'doc_ids': all_doc_ids,
+            'texts': all_texts,
+            'metadata': all_metadata,
+            'source_type': 'chunked_parquet',
+            'chunk_count': len(sorted_chunk_files),
+            'total_documents': len(all_doc_ids)
+        }
+        
+        self.logger.info(f"✅ Chunked parquet metadata betöltve:")
+        self.logger.info(f"  📁 Chunk fájlok: {len(sorted_chunk_files)}")
+        self.logger.info(f"  📄 Dokumentumok: {len(all_doc_ids):,}")
+        self.logger.info(f"  🔍 Szemantikai kereshetőség: MEGŐRIZVE")
+        
+        return embedding_metadata
     
     def _precompute_advanced_metrics(self):
         """Fejlett gráf metrikák előszámítása teljesítmény optimalizáláshoz."""

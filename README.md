@@ -96,61 +96,6 @@ graph TD
 
 A projekt legfőbb innovációja egy intelligens re-ranking rendszer, amely DeepSeek által kifejlesztett **Group Relative Policy Optimization (GRPO)** algoritmussal optimalizálja a keresési eredményeket.
 
-#### GRPO Rendszerarchitektúra
-
-**Állapottér (State Space)**:
-- Lekérdezés embedding reprezentációja (8192D Qwen3-8B)
-- Top-K jelölt dokumentumok embedding vektorai
-- Gráf alapú kapcsolódó dokumentumok metrikái (centralitás, PageRank)
-- Összefűzött állapotvektor: `[query_emb, doc1_emb, doc2_emb, ..., docK_emb, graph_features]`
-
-**Akciótér (Action Space)**:
-- Minden jelölt dokumentumhoz pontszám generálása
-- Csoportos rangsorolási döntések (G darab output per query)
-- Determinisztikus policy network output: `scores = π_θ(state)`
-
-**Szabály-alapú Értékelési Rendszer** (nincs tanult reward modell):
-- **Objektív kritériumok**: Automatikus pontosság ellenőrzés
-- **NDCG kalkuláció**: Szakértői ground truth alapján
-- **Csoportos normalizálás**: `A_i = (r_i - μ_group) / σ_group`
-
-#### GRPO (Group Relative Policy Optimization)
-
-A GRPO a DeepSeek által bevezetett hatékony RL algoritmus, amely eltávolítja a value network szükségességét és relatív csoportos értékelésen alapul:
-
-**Algoritmus lépései**:
-1. **Csoportos mintavételezés**: Minden lekérdezés `q`-hoz generál G darab ranking `{o_1, o_2, ..., o_G}`
-2. **Szabály-alapú pontozás**: Rewards `{r_1, r_2, ..., r_G}` objektív kritériumok alapján
-3. **Csoportos advantage**: `A_i = (r_i - μ_group) / σ_group` (nincs value function)
-4. **Policy update**: PPO-szerű clipped objective GRPO formulával
-5. **KL regularizáció**: Reference policy-től való eltérés korlátozása
-
-**GRPO objektív függvény**:
-```
-L_GRPO = E[min(ρ_i * A_i, clip(ρ_i, 1-ε, 1+ε) * A_i)] - β * KL(π_θ || π_ref)
-```
-
-Ahol:
-- `ρ_i = π_θ(o_i|q) / π_θ_old(o_i|q)` - valószínűségi arány
-- `A_i` - csoportos relatív advantage
-- `β` - KL regularizációs paraméter
-
-**Előnyök a PPO-hoz képest**:
-- **50% kevesebb memóriaigény**: Nincs szükség value network-re
-- **Gyorsabb konvergencia**: Relatív értékelés hatékonyabb tanulási jelet ad
-- **Stabilabb optimalizálás**: Csoportos normalizálás csökkenti a varianciát
-- **Egyszerűbb implementáció**: Kevesebb hiperparaméter hangolás szükséges
-
-### 5. Kiértékelési Framework
-
-A rendszer többrétegű kiértékelési módszertant alkalmaz:
-
-- **Automatikus metrikák**: NDCG@5, NDCG@10, MAP, MRR
-- **Szakértői értékelés**: Jogi szakértők által végzett relevancia értékelés
-- **A/B teszt környezet**: Baseline vs. RL-optimalizált rendszer összehasonlítása
-
-
-
 ## Technológiai Stack
 
 ### Core Components
@@ -163,7 +108,6 @@ A rendszer többrétegű kiértékelési módszertant alkalmaz:
 ### Cloud Infrastructure
 - **GPU Platform**: RunPod, Vast.ai
 - **Recommended Hardware**: A100 80GB GPU
-- **Storage**: SSD storage minimum 100GB
 - **Memory**: 64GB+ RAM ajánlott
 
 ## Kutatási Hozzájárulások

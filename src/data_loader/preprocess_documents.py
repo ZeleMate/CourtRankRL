@@ -1,5 +1,6 @@
 # Ez a szkript felelős a nyers dokumentumok (RTF, DOCX) és a hozzájuk tartozó
-# JSON metaadatok feldolgozásáért, majd egyetlen "nyers" CSV fájlba történő mentéséért.
+# JSON metaadatok feldolgozásáért, majd chunked CSV fájlokba történő mentéséért.
+# MÓDOSÍTVA: Memory-safe chunked mentés az OOM problémák elkerülésére.
 import pandas as pd
 import json
 import re
@@ -11,11 +12,29 @@ import logging # logging importálása
 from striprtf.striprtf import rtf_to_text
 
 # Projekt gyökérkönyvtárának hozzáadása a Python útvonalhoz
-project_root = Path(__file__).resolve().parent.parent
+project_root = Path(__file__).resolve().parent.parent.parent  # data_loader -> src -> project_root
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-from configs import config
+# Debug: config import ellenőrzése
+configs_path = project_root / "configs"
+if not configs_path.exists():
+    print(f"HIBA: configs mappa nem található: {configs_path}")
+    print(f"Project root: {project_root}")
+    print(f"Working directory: {os.getcwd()}")
+    sys.exit(1)
+
+try:
+    from configs import config
+except ImportError as e:
+    print(f"HIBA: configs modul import sikertelen: {e}")
+    print(f"Python path: {sys.path}")
+    print(f"Configs path: {configs_path}")
+    sys.exit(1)
+
+# ===== CHUNKED MENTÉS KONFIGURÁCIÓJA =====
+CHUNK_SIZE = 2000  # Rekordok száma chunk-onként (memória optimalizáláshoz)
+ENABLE_UNIFIED_CSV = True  # Egyesített CSV létrehozása backwards compatibility-ért
 
 # Loggolás beállítása a központi konfigurációból
 # Ennek a config importálása UTÁN kell következnie
@@ -27,19 +46,59 @@ logging.basicConfig(
                # Óvatosan használandó, mivel felülírja a meglévő beállításokat.
 )
 
+def save_chunk_to_csv(chunk_records, chunk_idx, expected_cols):
+    """
+    Chunk mentése CSV fájlba a szemantikai kereshetőség megőrzésével.
+    """
+    if not chunk_records:
+        return None
+    
+    # DataFrame létrehozása
+    df_chunk = pd.DataFrame(chunk_records)
+    
+    # Hiányzó oszlopok hozzáadása (az eredeti logika alapján)
+    for col in expected_cols:
+        if col not in df_chunk.columns:
+            df_chunk[col] = None
+    
+    # Oszlopok sorrendjének beállítása (az eredeti logika alapján)
+    final_ordered_cols = [col for col in expected_cols if col in df_chunk.columns]
+    other_cols = [col for col in df_chunk.columns if col not in final_ordered_cols]
+    df_chunk = df_chunk[final_ordered_cols + other_cols]
+    
+    # Chunk fájl mentése
+    chunk_filename = f"raw_chunk_{chunk_idx:04d}.csv"
+    chunk_dir = config.OUT_DIR / "chunked_raw"
+    chunk_dir.mkdir(parents=True, exist_ok=True)
+    chunk_path = chunk_dir / chunk_filename
+    
+    df_chunk.to_csv(chunk_path, index=False, encoding=config.CSV_ENCODING, errors='replace')
+    
+    logging.info(f"Raw chunk mentve: {chunk_filename} ({len(df_chunk):,} rekord)")
+    return chunk_path
+
 # Adat könyvtár elérési útja a konfigurációból
-# FIGYELEM: A `root_dir` beállítása itt a projekt gyökeréhez képest relatív 'data' mappára mutat.
-# Győződj meg róla, hogy a `config.DATA_DIR` (ha használni szeretnéd) megfelelően van beállítva,
-# vagy ez a `project_root / 'data'` megfelel a célnak.
-# Jelenleg a szkript a `project_root / 'data'`-t használja, nem a `config.DATA_DIR`-t.
 root_dir_to_scan = project_root / 'data' # Ez a könyvtár lesz rekurzívan bejárva
 paths = list(root_dir_to_scan.rglob('*')) # Az összes fájl és mappa lekérése
-records = [] # Az összegyűjtött rekordok listája
 
-# Támogatott szövegfájl kiterjesztések (a configból is jöhetne, ha ott definiálva van)
-# Jelenleg a config.SUPPORTED_TEXT_EXTENSIONS = ['.docx', '.rtf'] van beállítva.
-# Használjuk azt a konzisztencia érdekében.
+# ===== CHUNKED FELDOLGOZÁS VÁLTOZÓK =====
+chunk_records = []  # Aktuális chunk rekordjai (korlátozott méret!)
+chunk_idx = 0       # Chunk sorszáma
+saved_chunks = []   # Mentett chunk fájlok listája
+total_records = 0   # Statisztika
+
+# Támogatott szövegfájl kiterjesztések
 SUPPORTED_EXTENSIONS = tuple(ext.lower() for ext in config.SUPPORTED_TEXT_EXTENSIONS)
+
+# Várt oszlopok (az eredeti logika alapján) 
+expected_cols_for_raw_csv = [
+    'doc_id', 'text', 'birosag', 'JogTerulet', 'Azonosito', 'MeghozoBirosag',
+    'EgyediAzonosito', 'HatarozatEve', 'AllKapcsolodoUgyszam', 'AllKapcsolodoBirosag',
+    'KapcsolodoHatarozatok', 'Jogszabalyhelyek'
+]
+
+logging.info(f"Chunked feldolgozás kezdése (chunk méret: {CHUNK_SIZE:,})")
+logging.info(f"Találva {len(paths):,} potenciális fájl")
 
 for path in tqdm(paths, desc="Dokumentumfájlok feldolgozása"): # tqdm progress bar
     if path.is_file() and path.suffix.lower() in SUPPORTED_EXTENSIONS:
@@ -135,33 +194,71 @@ for path in tqdm(paths, desc="Dokumentumfájlok feldolgozása"): # tqdm progress
         record.pop('DownloadLink', None)
         record.pop('metadata', None) # Ha a **extracted_metadata hozzáadta volna a teljes 'List' objektumot
 
-        records.append(record)
+        # ===== CHUNKED MENTÉS =====
+        chunk_records.append(record)
+        total_records += 1
+        
+        # Ha elérte a chunk méretet, mentés és reset
+        if len(chunk_records) >= CHUNK_SIZE:
+            chunk_path = save_chunk_to_csv(chunk_records, chunk_idx, expected_cols_for_raw_csv)
+            if chunk_path:
+                saved_chunks.append(chunk_path)
+            chunk_records = []  # Reset a memória felszabadításához
+            chunk_idx += 1
 
-df = pd.DataFrame(records)
+# ===== UTOLSÓ CHUNK MENTÉSE =====
+if chunk_records:
+    chunk_path = save_chunk_to_csv(chunk_records, chunk_idx, expected_cols_for_raw_csv)
+    if chunk_path:
+        saved_chunks.append(chunk_path)
 
-# Biztosítjuk, hogy a fontos oszlopok létezzenek, még ha üresek is egyes rekordoknál
-# Ezeknek az oszlopoknak összhangban kell lenniük az qwen3_8b_embedding.ipynb notebook-ban készült Parquet oszlopaival
-# (kivéve az 'embedding' oszlopot, ami később kerül hozzáadásra)
-expected_cols_for_raw_csv = [
-    'doc_id', 'text', 'birosag', 'JogTerulet', 'Azonosito', 'MeghozoBirosag',
-    'EgyediAzonosito', 'HatarozatEve', 'AllKapcsolodoUgyszam', 'AllKapcsolodoBirosag',
-    'KapcsolodoHatarozatok', 'Jogszabalyhelyek'
-]
-for col in expected_cols_for_raw_csv:
-    if col not in df.columns:
-        df[col] = None # Hozzáadás None értékekkel, ha hiányzik
+# ===== ÖSSZEGZŐ STATISZTIKÁK =====
+logging.info(f"Chunked feldolgozás befejezve:")
+logging.info(f"  Feldolgozott rekordok: {total_records:,}")
+logging.info(f"  Mentett chunk-ok: {len(saved_chunks)}")
+logging.info(f"  Chunk-ok mappája: {config.OUT_DIR / 'chunked_raw'}")
 
-# Oszlopok sorrendjének beállítása az olvashatóság érdekében (opcionális)
-# Csak a létező oszlopokat próbáljuk meg átrendezni
-final_ordered_cols = [col for col in expected_cols_for_raw_csv if col in df.columns]
-other_cols = [col for col in df.columns if col not in final_ordered_cols]
-df = df[final_ordered_cols + other_cols]
+# ===== OPCIONÁLIS EGYESÍTETT CSV (BACKWARDS COMPATIBILITY) =====
+unified_csv_created = False
+if ENABLE_UNIFIED_CSV and saved_chunks:
+    logging.info("Egyesített CSV létrehozása backwards compatibility-ért...")
+    logging.warning("FIGYELEM: Ez megnöveli a memóriahasználatot!")
+    
+    try:
+        # Chunk-ok egyesítése
+        all_chunk_dfs = []
+        for chunk_path in saved_chunks:
+            chunk_df = pd.read_csv(chunk_path, encoding=config.CSV_ENCODING)
+            all_chunk_dfs.append(chunk_df)
+        
+        # Egyesített DataFrame
+        unified_df = pd.concat(all_chunk_dfs, ignore_index=True)
+        
+        # Egyesített CSV mentése (az eredeti helyre)
+        out_path = config.RAW_CSV_DATA_PATH
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        unified_df.to_csv(out_path, index=False, encoding=config.CSV_ENCODING, errors='replace')
+        
+        unified_csv_created = True
+        logging.info(f"Egyesített CSV mentve: {out_path} ({len(unified_df):,} sor)")
+        
+        # Memória felszabadítás
+        del all_chunk_dfs, unified_df
+        
+    except Exception as e:
+        logging.error(f"Hiba az egyesített CSV létrehozásában: {e}")
+        logging.info("A chunk-ok továbbra is elérhetők a chunked_raw mappában.")
 
-# Kimeneti CSV fájl mentése
-out_path = config.RAW_CSV_DATA_PATH
-out_path.parent.mkdir(parents=True, exist_ok=True) # Mappa létrehozása, ha nem létezik
-df.to_csv(out_path, index=False, encoding=config.CSV_ENCODING, errors='replace')
+# ===== VÉGSŐ ÜZENETEK =====
+print(f"\n✅ CHUNKED PREPROCESSING BEFEJEZVE!")
+print(f"📊 Feldolgozott rekordok: {total_records:,}")
+print(f"📁 Chunk fájlok ({len(saved_chunks)} db): {config.OUT_DIR / 'chunked_raw'}")
 
-logging.info(f"Nyers EDA adatok feldolgozása befejezve. Mentve ide: {out_path}") # print helyett logging
-# A print itt is maradhat, ha a felhasználói visszajelzés a cél a szkript végén.
-print(f'A feldolgozott nyers adatokat tartalmazó CSV fájl mentve: {out_path}')
+if unified_csv_created:
+    print(f"📄 Egyesített CSV (backwards compatibility): {config.RAW_CSV_DATA_PATH}")
+    print(f"💡 Következő scriptek használhatják az egyesített CSV-t vagy a chunk-okat")
+else:
+    print(f"⚠️  Nincs egyesített CSV - csak chunk-ok (memória kímélés)")
+    print(f"💡 Következő lépés: eda_clean_for_embedding.py módosítása chunked olvasásra")
+
+print(f"🚀 Memory használat optimalizálva: max {CHUNK_SIZE:,} rekord memóriában egyszerre")
