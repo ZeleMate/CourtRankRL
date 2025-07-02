@@ -135,7 +135,7 @@ def main():
     # Bemeneti fájl ellenőrzése
     if not PROCESSED_PARQUET_DATA_PATH.exists():
         logging.error(f"A bemeneti fájl nem található: {PROCESSED_PARQUET_DATA_PATH}")
-        raise SystemExit("Először futtasd a generate_embeddings.py szkriptet!")
+        raise SystemExit("Először futtasd az embedding generálást (qwen3_8b_embedding.ipynb RunPod-on)!")
 
     try:
         # Beágyazások beolvasása

@@ -140,12 +140,12 @@ for path in tqdm(paths, desc="Dokumentumfájlok feldolgozása"): # tqdm progress
 df = pd.DataFrame(records)
 
 # Biztosítjuk, hogy a fontos oszlopok létezzenek, még ha üresek is egyes rekordoknál
-# Ezeknek az oszlopoknak összhangban kell lenniük a FINAL_OUTPUT_COLUMNS-zal a generate_embeddings.py-ban
+# Ezeknek az oszlopoknak összhangban kell lenniük az qwen3_8b_embedding.ipynb notebook-ban készült Parquet oszlopaival
 # (kivéve az 'embedding' oszlopot, ami később kerül hozzáadásra)
 expected_cols_for_raw_csv = [
     'doc_id', 'text', 'birosag', 'JogTerulet', 'Azonosito', 'MeghozoBirosag',
     'EgyediAzonosito', 'HatarozatEve', 'AllKapcsolodoUgyszam', 'AllKapcsolodoBirosag',
-    'KapcsolodoHatarozatok', 'Jogszabalyhelyek' # Jogszabalyhelyek is fontos lehet
+    'KapcsolodoHatarozatok', 'Jogszabalyhelyek'
 ]
 for col in expected_cols_for_raw_csv:
     if col not in df.columns:

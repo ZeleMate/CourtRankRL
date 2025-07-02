@@ -43,7 +43,7 @@ DATA_PROCESSING_CHUNK_SIZE = 500 # Feldolgozási egység mérete a fájlbejárá
 SUPPORTED_TEXT_EXTENSIONS = ['.docx', '.rtf']
 
 # ------------------------------------------------------------------
-# Qwen3-Embedding-8B beállítások (generate_embeddings.py)
+# Qwen3-Embedding-8B beállítások (qwen3_8b_embedding.ipynb)
 # A projekt egyetlen embedding modellje cloud GPU környezetben
 # ------------------------------------------------------------------
 EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-8B"
@@ -61,13 +61,17 @@ EMBEDDING_API_REQUEST_MAX_TOKENS = 300000
 FAISS_INDEX_NLIST = 100  # Inverz fájl celláinak száma
 FAISS_INDEX_NPROBE = 10  # Kereséskor vizsgált cellák száma
 
-# Kimeneti oszlopok a Parquet fájlhoz (generate_embeddings.py)
+# Kimeneti oszlopok a Parquet fájlhoz (qwen3_8b_embedding.ipynb)
 EMBEDDING_OUTPUT_COLUMNS = [
     'doc_id',
     'birosag',
     'jogterulet',
     'hatarozat_id_mappa',
     'text',
+    'AllKapcsolodoUgyszam',
+    'AllKapcsolodoBirosag',
+    'KapcsolodoHatarozatok',
+    'Jogszabalyhelyek',
     'embedding', # Qwen3-8B embedding vektor (8192 dimenzió)
     'metadata_json',
     # Ide jöhetnek további oszlopok a CSV-ből, ha szükségesek
@@ -80,7 +84,7 @@ EMBEDDING_OUTPUT_COLUMNS = [
 CSV_ENCODING = 'utf-8'
 CSV_INDEX = False # Írjuk-e a DataFrame indexet a CSV-be
 
-# Parquet írás (generate_embeddings.py)
+# Parquet írás (qwen3_8b_embedding.ipynb)
 PARQUET_ENGINE = 'pyarrow'
 PARQUET_INDEX = False # Írjuk-e a DataFrame indexet a Parquet-be
 # WRITE_CHUNK_SIZE = 10000 # Parquet írás chunk mérete (ha szükséges lenne)
