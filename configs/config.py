@@ -98,7 +98,7 @@ LOGGING_FORMAT = '%(asctime)s - %(levelname)s - %(message)s'
 # ------------------------------------------------------------------
 # Adattisztítási beállítások (eda_clean_for_embedding.py)
 # ------------------------------------------------------------------
-CLEANING_MIN_TEXT_LENGTH = 50 # Minimális szöveghossz a tisztításhoz
+CLEANING_MIN_TEXT_LENGTH = 10 # Minimális szöveghossz a tisztításhoz
 
 # ------------------------------------------------------------------
 # Egyéb beállítások (pl. modell, keresés, gráf DB, RL - ezek már itt voltak)
