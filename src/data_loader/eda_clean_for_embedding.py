@@ -41,7 +41,7 @@ except (ValueError, TypeError) as e:
     csv.field_size_limit(131072) # Default fallback
 
 # --- GLOBÁLIS KONFIGURÁCIÓ ---
-MIN_TEXT_LENGTH = config.MIN_TEXT_LENGTH
+MIN_TEXT_LENGTH = config.CLEANING_MIN_TEXT_LENGTH
 
 def clean_text(text):
     """
@@ -74,9 +74,12 @@ def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     initial_rows = len(df)
     logging.info(f"DataFrame tisztításának kezdete {initial_rows:,} sorral.")
 
+    # tqdm integráció a pandas apply művelethez
+    tqdm.pandas(desc="Szövegtisztítás")
+
     # Szöveg tisztítása a 'text' oszlopon
     if 'text' in df.columns:
-        df['cleaned_text'] = df['text'].astype(str).apply(clean_text)
+        df['cleaned_text'] = df['text'].astype(str).progress_apply(clean_text)
         logging.info("A 'text' oszlop tisztítása befejeződött.")
     else:
         logging.warning("A 'text' oszlop nem található a DataFrame-ben. A szövegtisztítás kimarad.")

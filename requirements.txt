@@ -1,32 +1,18 @@
-# Alapvető Python csomagok
-pandas>=2.0.0
-numpy>=1.24.0
-pyarrow>=15.0.0
-
-# Embedding és ML csomagok
-sentence-transformers>=3.0.0
-torch>=2.0.0
-transformers>=4.36.0
-
-# Rendszer monitoring
-psutil>=5.9.0
-
-# Progress bar és logging
-tqdm>=4.65.0
-
-# Környezeti változók
-python-dotenv>=1.0.0
-
-# Adatfeldolgozás
-faiss-cpu>=1.7.4
-
-# Jupyter notebook támogatás (opcionális)
-jupyter>=1.0.0
-ipykernel>=6.0.0
-matplotlib>=3.5.0
-
-# Dokumentum feldolgozás (ha szükséges)
-python-docx>=1.1.0
-
-# Konfigurációs fájlok
-pyyaml>=6.0.0
+numpy
+pandas
+tqdm
+torch
+transformers
+sentence-transformers
+faiss-cpu
+pyarrow
+scikit-learn
+networkx
+python-docx
+striprtf
+python-dotenv
+jupyter
+ipykernel
+gymnasium
+matplotlib
+seaborn
