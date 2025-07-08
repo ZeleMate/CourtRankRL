@@ -1,6 +1,6 @@
-# Magyar Bírósági Határozatok Szemantikus Keresőrendszere Megerősítéses Tanulással
+# CourtRankRL: Magyar Bírósági Határozatok Szemantikus Keresőrendszere Megerősítéses Tanulással
 
-## Szakdolgozat Áttekintés
+## Projekt Áttekintés
 
 Ez a projekt egy komplex, end-to-end megoldást mutat be magyarországi bírósági határozatok hatékony szabadszöveges keresésére. A rendszer egy többlépcsős architektúrát implementál, amely kezdetben szemantikus embeddingek alapján végez hasonlóság-alapú keresést, majd megerősítéses tanulással (RL) finomhangolt intelligens ágensek segítségével optimalizálja a végső találati listát a releváns dokumentumok jobb rangsorolása érdekében.
 
@@ -109,6 +109,20 @@ A projekt egyik fő célkitűzése egy intelligens re-ranking rendszer létrehoz
 - **GPU Platform (Embeddinghez)**: RunPod, Vast.ai (ajánlott)
 - **Ajánlott Hardver**: A embedding generáláshoz GPU (pl. Nvidia A100) javasolt. A keresőrendszer és az RL keretrendszer CPU-n is működőképes.
 
+## Telepítés
+
+A projekt futtatásához szükséges környezet beállítása `conda` segítségével javasolt az `environment.yml` fájl alapján.
+
+1.  **Hozza létre a conda környezetet:**
+    ```bash
+    conda env create -f environment.yml
+    ```
+
+2.  **Aktiválja a környezetet:**
+    ```bash
+    conda activate courtrankrl
+    ```
+
 ## Kutatási Hozzájárulások
 
 ### 1. GRPO-alapú Hibrid Keresési Architektúra Tervezete
@@ -132,7 +146,7 @@ Innovatív objektív értékelési rendszer, amely szakértői annotáció helye
 - **Interdiszciplináris keresés**: Kapcsolódó jogterületek összekötése
 - **Prediktív elemzés**: Hasonló ügyek kimenetelének előrejelzése
 
-## Szakdolgozat Kontribúciók
+## A Projekt Hozzájárulásai
 
 Ez a projekt demonstrálja, hogy a modern gépi tanulási technikák kombinációja jelentős javulást eredményezhet a specializált domain-specifikus keresési feladatokban. A megerősítéses tanulás alkalmazása a keresési eredmények re-ranking problémájára újszerű megközelítést jelent a magyar NLP kutatásokban.
 
