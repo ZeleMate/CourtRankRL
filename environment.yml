@@ -1,6 +1,6 @@
 name: courtrankrl
 channels:
-  - defaults
+  - conda-forge
   - pytorch
 dependencies:
   - python=3.9
