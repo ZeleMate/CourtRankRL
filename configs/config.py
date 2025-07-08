@@ -46,8 +46,8 @@ SUPPORTED_TEXT_EXTENSIONS = ['.docx', '.rtf']
 # Qwen3-Embedding-8B beállítások (qwen3_8b_embedding.ipynb)
 # A projekt egyetlen embedding modellje cloud GPU környezetben
 # ------------------------------------------------------------------
-EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-8B"
-EMBEDDING_DIMENSION = 8192
+EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-0.6B"
+EMBEDDING_DIMENSION = 1024
 EMBEDDING_BATCH_SIZE = 8
 EMBEDDING_MAX_TOKENS = 8192
 EMBEDDING_API_REQUEST_MAX_TOKENS = 300000

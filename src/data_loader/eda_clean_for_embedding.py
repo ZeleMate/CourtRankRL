@@ -47,7 +47,8 @@ MIN_TEXT_LENGTH = config.CLEANING_MIN_TEXT_LENGTH
 
 def clean_text(text):
     """
-    Szöveg tisztítása: HTML tartalom, speciális karakterek, URL-ek, email címek és extra szóközök eltávolítása.
+    Szöveg tisztítása: HTML tartalom, speciális karakterek, URL-ek, email címek,
+    zajszerű mintázatok eltávolítása és kisbetűsítés.
     """
     if not isinstance(text, str) or not text.strip():
         return ""
@@ -63,10 +64,19 @@ def clean_text(text):
         # Ha a BeautifulSoup nem működik, egyszerű regex-szel próbáljuk
         text = re.sub(r'<[^>]+>', '', text)
     
-    # HTTP hibakódok és hasonló tartalmak eltávolítása
-    text = re.sub(r'\b\d{3}\s+Gateway\s+Time-out\b', '', text, flags=re.IGNORECASE)
-    text = re.sub(r'\bThe\s+s\.\.\.\s*$', '', text, flags=re.IGNORECASE)
-    
+    # Egyedi zajszűrő mintázatok eltávolítása
+    # HTTP hibák, szerverüzenetek és egyéb, a szöveg tartalmához nem tartozó zajok.
+    noise_patterns = [
+        r'\b\d{3}\s+Gateway\s+Time-out\b',
+        r'\bHTTP\s+Error\s+\d{3}\b',
+        r'Internal\s+Server\s+Error',
+        r'The\s+service\s+is\s+unavailable',
+        r'\bThe\s+s\.\.\.\s*$',
+        r'a\s+kiszolgáló\s+nem\s+található',
+    ]
+    for pattern in noise_patterns:
+        text = re.sub(pattern, '', text, flags=re.IGNORECASE)
+
     # URL-ek eltávolítása (HTTP, HTTPS, WWW)
     text = re.sub(r'http\S+|www\S+|https\S+', '', text, flags=re.MULTILINE)
     
@@ -82,6 +92,9 @@ def clean_text(text):
     
     # Különleges karakterek eltávolítása, de magyar ékezetes betűk megtartása
     text = re.sub(r'[^\w\s.,-áéíóöőúüűÁÉÍÓÖŐÚÜŰ]', ' ', text)
+    
+    # Egységes kisbetűre alakítás
+    text = text.lower()
     
     # Többszörös szóközök, tabulátorok, új sorok cseréje egyetlen szóközre
     text = re.sub(r'\s+', ' ', text).strip()
