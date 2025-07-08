@@ -49,7 +49,7 @@ graph TD
     
     subgraph "Embedding Réteg"
         P["Batch Processing"]
-        Q["Qwen3-8B Modell"]
+        Q["Embedding Modell"]
         R["Vektor Adatbázis"]
         O --> P --> Q --> R
         R --> D
@@ -86,44 +86,44 @@ graph TD
 
 ### Főbb Rendszerkomponensek
 
-- **Adatfeldolgozási Réteg**: 213,398 bírósági határozat preprocessing és strukturálása
-- **Embedding Réteg**: Qwen3-8B (8192D) modell batch feldolgozással A100 80GB GPU-n
-- **Gráf Réteg**: NetworkX irányított gráf 1,585,738 csomóponttal és 4,412,596 éllel
-- **Hibrid Keresési Motor**: FAISS ANN + gráf traversal algoritmusok kombinációja
-- **RL Optimalizálás**: RankingEnv + PolicyNetwork + NDCG-alapú reward modell
+- **Adatfeldolgozási Réteg**: Több mint 200,000 bírósági határozat feldolgozása és strukturálása. *(Megjegyzés: a pontos szám a felhasznált adatforrástól függ.)*
+- **Embedding Réteg**: `Qwen/Qwen3-Embedding-0.6B` (1024D) modell használata. Az embedding generálás GPU-t igényel (pl. A100), de a rendszer többi része CPU-n is futtatható.
+- **Gráf Réteg**: NetworkX irányított gráf, amely a dokumentumok, jogszabályok és bíróságok kapcsolatait modellezi. *(Megjegyzés: a gráf mérete—csomópontok és élek száma—az adatbázis méretétől függ.)*
+- **Hibrid Keresési Motor**: `faiss-cpu` alapú ANN keresés és gráf algoritmusok kombinációja.
+- **RL Optimalizálás**: A rendszer egy `Gymnasium` alapú `RankingEnv`-et és egy `PyTorch`-ban implementált `PolicyNetwork`-öt tartalmaz. A jutalmazási modell NDCG-alapú. A GRPO algoritmus implementálása tervezett, a jelenlegi rendszer a keretrendszer alapjait fekteti le.
 
 ### Megerősítéses Tanulás alapú Re-ranking
 
-A projekt legfőbb innovációja egy intelligens re-ranking rendszer, amely DeepSeek által kifejlesztett **Group Relative Policy Optimization (GRPO)** algoritmussal optimalizálja a keresési eredményeket.
+A projekt egyik fő célkitűzése egy intelligens re-ranking rendszer létrehozása, amely a DeepSeek által fejlesztett **Group Relative Policy Optimization (GRPO)** algoritmuson alapulna. A jelenlegi implementáció a szükséges környezetet és ágens-architektúrát tartalmazza, de a GRPO specifikus optimalizálási logikája még fejlesztés alatt áll.
 
 ## Technológiai Stack
 
 ### Core Components
-- **Embedding Model**: Qwen/Qwen3-8B (HuggingFace Transformers)
-- **Vector Search**: FAISS (Facebook AI Similarity Search)
+- **Embedding Model**: `Qwen/Qwen3-Embedding-0.6B` (HuggingFace Transformers)
+- **Vector Search**: `faiss-cpu` (Facebook AI Similarity Search)
 - **RL Framework**: PyTorch + Gymnasium
-- **Data Processing**: Pandas, NumPy
-- **Infrastructure**: Python 3.9+, CUDA 11.8+
+- **Data Processing**: Pandas, NumPy, NetworkX
+- **Infrastructure**: Python 3.9+
 
 ### Cloud Infrastructure
-- **GPU Platform**: RunPod, Vast.ai
-- **Recommended Hardware**: A100 80GB GPU
-- **Memory**: 64GB+ RAM ajánlott
+- **GPU Platform (Embeddinghez)**: RunPod, Vast.ai (ajánlott)
+- **Ajánlott Hardver**: A embedding generáláshoz GPU (pl. Nvidia A100) javasolt. A keresőrendszer és az RL keretrendszer CPU-n is működőképes.
 
 ## Kutatási Hozzájárulások
 
-### 1. GRPO-alapú Hibrid Keresési Architektúra
-Első alkalommal alkalmazza a DeepSeek GRPO algoritmusát jogi dokumentumkeresésben, kombinálja nagy léptékű szemantikus embeddingeket, gráf alapú kapcsolati hálózatot és hatékony megerősítéses tanulást.
+### 1. GRPO-alapú Hibrid Keresési Architektúra Tervezete
+A projekt egy olyan hibrid architektúrát vázol fel, amely kombinálja a modern szemantikus embeddingeket, a gráf alapú kapcsolati hálózatokat és a megerősítéses tanulást. A rendszer keretrendszerként szolgál a GRPO algoritmus jövőbeli, jogi dokumentumkeresési célú alkalmazásához.
 
 ### 2. Magyar Jogi Domain Adaptáció
 Specializált pipeline magyar bírósági határozatok feldolgozására, amely figyelembe veszi a jogi terminológia sajátosságait és a magyar nyelv specifikus jellemzőit.
 
 ### 3. Szabály-alapú Reward Modelling
-Innovatív objektív értékelési rendszer, amely szakértői annotáció helyett szabály-alapú kritériumokat használ (pontosság, relev
+Innovatív objektív értékelési rendszer, amely szakértői annotáció helyett szabály-alapú kritériumokat használ (pontosság, relevancia, NDCG).
 
 ## Jövőbeli Fejlesztési Irányok
 
 ### Rövidtávú Célok
+- **GRPO implementáció befejezése**: A placeholder logika teljes értékű implementálása.
 - **Multi-modal embedding**: Dokumentum metaadatok integrálása
 - **Hierarchikus keresés**: Jogterület-specifikus specializáció
 - **Real-time learning**: Online RL algoritmusok implementálása
