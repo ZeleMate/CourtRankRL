@@ -9,6 +9,8 @@ from tqdm import tqdm
 import csv
 import logging
 import os
+from bs4 import BeautifulSoup
+import html
 
 # --- PATH KONFIGURÁCIÓ ---
 # Projekt gyökérkönyvtárának hozzáadása a Python útvonalhoz
@@ -45,22 +47,41 @@ MIN_TEXT_LENGTH = config.CLEANING_MIN_TEXT_LENGTH
 
 def clean_text(text):
     """
-    Szöveg tisztítása: speciális karakterek, URL-ek, email címek és extra szóközök eltávolítása.
+    Szöveg tisztítása: HTML tartalom, speciális karakterek, URL-ek, email címek és extra szóközök eltávolítása.
     """
-    if not isinstance(text, str):
+    if not isinstance(text, str) or not text.strip():
         return ""
     
-    # \x00 null byte karakter eltávolítása
-    text = text.replace('\x00', '')
+    # HTML entitások dekódolása (pl. &amp; -> &, &lt; -> <)
+    text = html.unescape(text)
     
-    # URL-ek eltávolítása
+    # HTML tagek és tartalmuk eltávolítása BeautifulSoup-pal
+    try:
+        soup = BeautifulSoup(text, 'html.parser')
+        text = soup.get_text(separator=' ')
+    except Exception:
+        # Ha a BeautifulSoup nem működik, egyszerű regex-szel próbáljuk
+        text = re.sub(r'<[^>]+>', '', text)
+    
+    # HTTP hibakódok és hasonló tartalmak eltávolítása
+    text = re.sub(r'\b\d{3}\s+Gateway\s+Time-out\b', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'\bThe\s+s\.\.\.\s*$', '', text, flags=re.IGNORECASE)
+    
+    # URL-ek eltávolítása (HTTP, HTTPS, WWW)
     text = re.sub(r'http\S+|www\S+|https\S+', '', text, flags=re.MULTILINE)
     
     # Email címek eltávolítása
     text = re.sub(r'\S+@\S+', '', text, flags=re.MULTILINE)
     
-    # Nem-alfanumerikus karakterek eltávolítása (kivéve pont, vessző, magyar ékezetes karakterek)
-    text = re.sub(r'[^\w\s.,-]', '', text)
+    # \x00 null byte és egyéb vezérlő karakterek eltávolítása
+    text = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]', '', text)
+    
+    # RTF specifikus maradványok eltávolítása
+    text = re.sub(r'\\[a-zA-Z]+\d*\s?', '', text)
+    text = re.sub(r'[{}]', '', text)
+    
+    # Különleges karakterek eltávolítása, de magyar ékezetes betűk megtartása
+    text = re.sub(r'[^\w\s.,-áéíóöőúüűÁÉÍÓÖŐÚÜŰ]', ' ', text)
     
     # Többszörös szóközök, tabulátorok, új sorok cseréje egyetlen szóközre
     text = re.sub(r'\s+', ' ', text).strip()
@@ -74,19 +95,26 @@ def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     initial_rows = len(df)
     logging.info(f"DataFrame tisztításának kezdete {initial_rows:,} sorral.")
 
-    # tqdm integráció a pandas apply művelethez
-    tqdm.pandas(desc="Szövegtisztítás")
-
     # Szöveg tisztítása a 'text' oszlopon
     if 'text' in df.columns:
-        df['cleaned_text'] = df['text'].astype(str).progress_apply(clean_text)
+        logging.info("Szövegtisztítás elkezdődik...")
+        
+        # Manuális progress bar-ral történő apply
+        text_series = df['text'].astype(str)
+        cleaned_texts = []
+        
+        # tqdm-ot a Series értékeire alkalmazzuk, nem magára a Series-re
+        for text in tqdm(text_series.values, desc="Szövegtisztítás"):
+            cleaned_texts.append(clean_text(text))
+        
+        df['text'] = cleaned_texts
         logging.info("A 'text' oszlop tisztítása befejeződött.")
     else:
         logging.warning("A 'text' oszlop nem található a DataFrame-ben. A szövegtisztítás kimarad.")
-        df['cleaned_text'] = ''
+        df['text'] = ''
 
     # Üres szövegek és túl rövid szövegek szűrése
-    df = df[df['cleaned_text'].str.len() >= MIN_TEXT_LENGTH]
+    df = df[df['text'].str.len() >= MIN_TEXT_LENGTH]
     
     final_rows = len(df)
     removed_rows = initial_rows - final_rows

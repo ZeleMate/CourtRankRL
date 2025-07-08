@@ -16,3 +16,4 @@ ipykernel
 gymnasium
 matplotlib
 seaborn
+beautifulsoup4

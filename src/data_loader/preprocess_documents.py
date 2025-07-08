@@ -11,6 +11,8 @@ import logging
 from striprtf.striprtf import rtf_to_text
 import csv
 from docx import Document
+from bs4 import BeautifulSoup
+import html
 
 # Projekt gyökérkönyvtárának hozzáadása a Python útvonalhoz
 project_root = Path(__file__).resolve().parent.parent.parent
@@ -26,6 +28,38 @@ except ImportError as e:
 
 # Loggolás beállítása
 logging.basicConfig(level=config.LOGGING_LEVEL, format=config.LOGGING_FORMAT)
+
+def clean_raw_text(text):
+    """
+    Nyers szöveg előzetes tisztítása HTML tartalom és speciális karakterek eltávolításával.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return ""
+    
+    # HTML entitások dekódolása (pl. &amp; -> &)
+    text = html.unescape(text)
+    
+    # HTML tagek eltávolítása BeautifulSoup-pal
+    try:
+        soup = BeautifulSoup(text, 'html.parser')
+        text = soup.get_text()
+    except Exception as e:
+        logging.warning(f"HTML parsing hiba, folytatás nyers szöveggel: {e}")
+    
+    # Null byte karakterek eltávolítása
+    text = text.replace('\x00', '')
+    
+    # Egyéb speciális vezérlő karakterek eltávolítása (ASCII 0-31, kivéve 9,10,13)
+    text = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]', '', text)
+    
+    # RTF specifikus maradványok eltávolítása
+    text = re.sub(r'\\[a-zA-Z]+\d*\s?', '', text)
+    text = re.sub(r'[{}]', '', text)
+    
+    # Többszörös whitespace karakterek normalizálása
+    text = re.sub(r'\s+', ' ', text).strip()
+    
+    return text
 
 # Adat könyvtár elérési útja a konfigurációból
 root_dir_to_scan = project_root / 'data'
@@ -63,8 +97,8 @@ for path in tqdm(paths, desc="Dokumentumfájlok feldolgozása"):
             except Exception as e:
                 logging.warning(f"Nem sikerült kinyerni a szöveget a DOCX fájlból ({text_path}): {e}")
         
-        text_content = text_content.replace('\x00', '')
-        text_content = re.sub(r'\s+', ' ', text_content).strip()
+        # Szöveg előzetes tisztítása
+        text_content = clean_raw_text(text_content)
 
         extracted_metadata = {}
         all_related_ugyszam = []
