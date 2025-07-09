@@ -29,34 +29,43 @@ except ImportError as e:
 # Loggolás beállítása
 logging.basicConfig(level=config.LOGGING_LEVEL, format=config.LOGGING_FORMAT)
 
-def clean_raw_text(text):
+def clean_text_for_embedding(text: str) -> str:
     """
-    Nyers szöveg előzetes tisztítása HTML tartalom és speciális karakterek eltávolításával.
+    Szöveg alapos tisztítása embedding generálás előtt.
+    Eltávolítja a HTML tageket, speciális karaktereket, URL-eket, és normalizálja a whitespace-t.
     """
     if not isinstance(text, str) or not text.strip():
         return ""
     
     # HTML entitások dekódolása (pl. &amp; -> &)
-    text = html.unescape(text)
-    
+    try:
+        text = html.unescape(text)
+    except Exception:
+        pass # Ha hiba történik, a nyers szöveggel megyünk tovább
+
     # HTML tagek eltávolítása BeautifulSoup-pal
     try:
         soup = BeautifulSoup(text, 'html.parser')
-        text = soup.get_text()
-    except Exception as e:
-        logging.warning(f"HTML parsing hiba, folytatás nyers szöveggel: {e}")
+        text = soup.get_text(separator=' ')
+    except Exception:
+        # Ha a BeautifulSoup hibát dob, egyszerű regex-szel próbáljuk
+        text = re.sub(r'<[^>]+>', '', text)
     
-    # Null byte karakterek eltávolítása
+    # URL-ek, email címek eltávolítása
+    text = re.sub(r'http\S+|www\S+|https\S+|\S+@\S+', '', text, flags=re.MULTILINE)
+
+    # Null byte és egyéb nem szöveges vezérlő karakterek eltávolítása
     text = text.replace('\x00', '')
-    
-    # Egyéb speciális vezérlő karakterek eltávolítása (ASCII 0-31, kivéve 9,10,13)
     text = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]', '', text)
     
-    # RTF specifikus maradványok eltávolítása
+    # RTF specifikus maradványok eltávolítása, amik a konverzió után maradhatnak
     text = re.sub(r'\\[a-zA-Z]+\d*\s?', '', text)
     text = re.sub(r'[{}]', '', text)
     
-    # Többszörös whitespace karakterek normalizálása
+    # Egységes kisbetűre alakítás
+    text = text.lower()
+    
+    # Többszörös szóközök, tabulátorok, új sorok cseréje egyetlen szóközre
     text = re.sub(r'\s+', ' ', text).strip()
     
     return text
@@ -97,8 +106,13 @@ for path in tqdm(paths, desc="Dokumentumfájlok feldolgozása"):
             except Exception as e:
                 logging.warning(f"Nem sikerült kinyerni a szöveget a DOCX fájlból ({text_path}): {e}")
         
-        # Szöveg előzetes tisztítása
-        text_content = clean_raw_text(text_content)
+        # A kinyert nyers szöveg azonnali tisztítása
+        cleaned_text_content = clean_text_for_embedding(text_content)
+
+        # Csak akkor dolgozzuk fel a rekordot, ha a tisztítás után is maradt értékelhető szöveg
+        if len(cleaned_text_content) < config.CLEANING_MIN_TEXT_LENGTH:
+            logging.debug(f"Dokumentum átugorva, mert a tisztított szöveg túl rövid: {path.name}")
+            continue
 
         extracted_metadata = {}
         all_related_ugyszam = []
@@ -140,7 +154,7 @@ for path in tqdm(paths, desc="Dokumentumfájlok feldolgozása"):
              logging.warning(f"Váratlan hiba a bíróság nevének útvonalból történő kinyerése közben ({path}): {e_path}")
 
         record = {
-            'text': text_content,
+            'text': cleaned_text_content,
             **extracted_metadata,
             'AllKapcsolodoUgyszam': json.dumps(all_related_ugyszam, ensure_ascii=False) if all_related_ugyszam else None,
             'AllKapcsolodoBirosag': json.dumps(all_related_birosag, ensure_ascii=False) if all_related_birosag else None,
@@ -156,14 +170,17 @@ for path in tqdm(paths, desc="Dokumentumfájlok feldolgozása"):
         all_records.append(record)
         total_records += 1
 
-# ===== EGYESÍTETT CSV LÉTREHOZÁSA ÉS MENTÉSE =====
+# ===== EGYESÍTETT, TISZTÍTOTT PARQUET LÉTREHOZÁSA ÉS MENTÉSE =====
 logging.info("Feldolgozás befejezve, egységes DataFrame létrehozása...")
 
 if all_records:
     try:
         df = pd.DataFrame(all_records)
         
-        # Oszlopok sorrendjének biztosítása (opcionális, de ajánlott a konzisztenciáért)
+        # A 'birosag' oszlop feltöltése, ha hiányzik (fontos a konzisztenciához)
+        df['birosag'] = df['birosag'].fillna('ISMERETLEN')
+
+        # Oszlopok sorrendjének biztosítása a jobb átláthatóságért
         expected_cols = [
             'doc_id', 'text', 'birosag', 'JogTerulet', 'Azonosito', 'MeghozoBirosag',
             'EgyediAzonosito', 'HatarozatEve', 'AllKapcsolodoUgyszam', 'AllKapcsolodoBirosag',
@@ -174,17 +191,24 @@ if all_records:
         other_cols = [col for col in df.columns if col not in final_cols]
         df = df[final_cols + other_cols]
 
-        out_path = config.RAW_CSV_DATA_PATH
+        # A kimeneti útvonal most a Parquet fájlra mutat
+        out_path = config.CLEANED_PARQUET_DATA_PATH
         out_path.parent.mkdir(parents=True, exist_ok=True)
         
-        df.to_csv(out_path, index=False, encoding=config.CSV_ENCODING, errors='replace', quoting=csv.QUOTE_ALL)
+        # Mentés egyetlen, tömörített Parquet fájlba
+        df.to_parquet(
+            path=out_path,
+            engine='pyarrow',
+            compression='snappy',
+            index=False,
+        )
         
-        logging.info(f"Egyesített CSV sikeresen mentve: {out_path} ({len(df):,} sor)")
+        logging.info(f"Tisztított Parquet fájl sikeresen mentve: {out_path} ({len(df):,} sor)")
 
     except Exception as e:
-        logging.error(f"Hiba az egyesített CSV létrehozásában vagy mentésében: {e}")
+        logging.error(f"Hiba a Parquet fájl létrehozásában vagy mentésében: {e}", exc_info=True)
 
 # ===== VÉGSŐ ÜZENETEK =====
 print(f"\n✅ PREPROCESSING BEFEJEZVE!")
 print(f"📊 Feldolgozott rekordok: {total_records:,}")
-print(f"📄 Kimeneti fájl: {config.RAW_CSV_DATA_PATH}")
+print(f"📄 Kimeneti fájl: {config.CLEANED_PARQUET_DATA_PATH}")

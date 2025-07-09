@@ -152,6 +152,59 @@ Ez a projekt demonstrálja, hogy a modern gépi tanulási technikák kombináci�
 
 A rendszer nem csupán egy technikai implementáció, hanem egy teljes kutatási framework, amely alkalmas további jogi informatikai alkalmazások fejlesztésére és a szemantikus keresés területén végzett alapkutatások támogatására.
 
+## 🔧 Hibaelhárítás
+
+### Qwen3 Modell Kompatibilitási Hiba
+
+Ha az alábbi hibát kapod:
+```
+ValueError: The checkpoint you are trying to load has model type `qwen3` but Transformers does not recognize this architecture.
+```
+
+**Megoldási lehetőségek:**
+
+#### 1. Környezet frissítése (Ajánlott)
+```bash
+# Környezet törlése és újralétrehozása frissített függőségekkel
+conda env remove -n courtrankrl
+conda env create -f environment.yml
+conda activate courtrankrl
+```
+
+#### 2. Alternatív embedding modell használata
+Módosítsd a `configs/config.py` fájlban az `EMBEDDING_MODEL` értékét:
+
+```python
+# Magyar nyelvre optimalizált alternatívák:
+EMBEDDING_MODEL = "intfloat/multilingual-e5-large"  # 1024 dimenzió
+EMBEDDING_DIMENSION = 1024
+
+# Vagy kisebb, gyorsabb modell:
+EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"  # 384 dimenzió  
+EMBEDDING_DIMENSION = 384
+```
+
+#### 3. Frissítés már létező környezetben
+```bash
+conda activate courtrankrl
+pip install --upgrade transformers>=4.44.0 sentence-transformers>=3.0.0
+```
+
+### GPU Memória Problémák
+
+Embedding generálás során GPU memória hiba esetén csökkentsd a batch méretet:
+```python
+EMBEDDING_BATCH_SIZE = 4  # csökkentve 8-ról 4-re
+```
+
+### FAISS Index Építési Problémák
+
+Ha a FAISS index építése sikertelen:
+```bash
+# Ellenőrizd az adatok meglétét
+python src/data_loader/build_faiss_index.py
+```
+
 ---
 
 **Készítette**: Zelenyiánszki Máté
