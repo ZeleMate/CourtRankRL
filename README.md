@@ -16,50 +16,44 @@ A következő diagram ábrázolja a rendszer főbb logikai egységeit és az ada
 
 ```mermaid
 graph TD
-    subgraph "Azure Blob Storage"
-        direction LR
-        A["raw/ (Nyers adatok)"]
-        B["processed/ (Feldolgozott adatok)"]
-        C["embeddings/ (Vektorok)"]
-        D["index/ (FAISS)"]
-        E["graph/ (Hivatkozási gráf)"]
-        F["models/ (RL Ágens)"]
+    subgraph Adatfeldolgozás
+        P1["Preprocess<br>(preprocess_documents.py)"]
+        P2["Embeddings<br>(create_embeddings_cloud.py)"]
+        P3["FAISS Index<br>(build_faiss_index.py)"]
+        P4["Gráf Építés<br>(graph_builder.py)"]
     end
 
-    subgraph "Adatfeldolgozás"
-        direction TB
-        P1["1. Preprocess<br>(preprocess_documents.py)"]
-        P2["2. Embeddings<br>(create_embeddings_cloud.py)"]
-        P3["3. FAISS Index<br>(build_faiss_index.py)"]
-        P4["4. Gráf Építés<br>(graph_builder.py)"]
+    subgraph "Azure Blob Storage"
+        A["raw / (Nyers adatok)"]
+        B["processed / (Feldolgozott adatok)"]
+        C["embeddings / (Vektorok)"]
+        D["index / (FAISS)"]
+        E["graph / (Hivatkozási gráf)"]
+        F["models / (RL Ágens)"]
     end
 
     subgraph "Keresés és Tanulás"
-        direction TB
         S1["HybridSearch<br>(semantic_search.py)"]
         S2["RankingEnv<br>(environment.py)"]
         S3["RLAgent<br>(agent.py)"]
         S4["Tréning / Kiértékelés<br>(train_agent.py, evaluate_agent.py)"]
     end
-    
-    A --> P1 --> B
-    B --> P2 --> C
-    C --> P3 --> D
-    B --> P4 --> E
-    
-    D & E & B --> S1
-    S1 --> S2
-    S2 <--> S3
-    S3 --> F
-    F --> S3
-    S2 & S3 --> S4
 
-    style A fill:#e1f5fe
-    style B fill:#e1f5fe
-    style C fill:#e1f5fe
-    style D fill:#e1f5fe
-    style E fill:#e1f5fe
-    style F fill:#e1f5fe
+    A -- "adat" --> P1 -- "feldolgozott" --> B
+    B -- "szövegek" --> P2 -- "vektorok" --> C
+    C -- "vektorok" --> P3 -- "index" --> D
+    B -- "metaadat" --> P4 -- "gráf" --> E
+
+    D -- "index" --> S1
+    E -- "gráf" --> S1
+    B -- "metaadatok" --> S1
+
+    S1 -- "kezdeti lista" --> S2
+    S2 <--> S3
+    S3 -- "tréning" --> S4
+    S2 -- "környezet" --> S4
+    S4 -- "mentett modell" --> F
+    F -- "betöltött modell" --> S3
 ```
 
 ### Főbb Rendszerkomponensek
