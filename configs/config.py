@@ -1,6 +1,7 @@
 # configs/config.py
 import os
 from pathlib import Path
+import logging
 
 # --- Alapvető könyvtárak ---
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -50,3 +51,10 @@ CHUNK_OVERLAP = 200
 
 # --- Szövegtisztítási beállítások ---
 CLEANING_MIN_TEXT_LENGTH = 150 # Minimum karakterhossz, ami alatt a szöveget zajnak tekintjük
+
+# --- Loggolási beállítások ---
+LOGGING_LEVEL = logging.INFO
+LOGGING_FORMAT = '%(asctime)s - %(levelname)s - %(message)s'
+
+# --- Támogatott fájltípusok ---
+SUPPORTED_TEXT_EXTENSIONS = ['.rtf', '.docx', '.txt']

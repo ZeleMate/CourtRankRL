@@ -78,7 +78,7 @@ total_records = 0
 # Támogatott szövegfájl kiterjesztések
 SUPPORTED_EXTENSIONS = tuple(ext.lower() for ext in config.SUPPORTED_TEXT_EXTENSIONS)
 
-logging.info(f"Feldolgozás kezdése, cél: egyetlen CSV fájl.")
+logging.info(f"Feldolgozás kezdése, cél: egyetlen Parquet fájl.")
 logging.info(f"Találva {len(paths):,} potenciális fájl")
 
 for path in tqdm(paths, desc="Dokumentumfájlok feldolgozása"):
