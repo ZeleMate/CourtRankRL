@@ -31,8 +31,8 @@ logging.basicConfig(level=config.LOGGING_LEVEL, format=config.LOGGING_FORMAT)
 
 def clean_text_for_embedding(text: str) -> str:
     """
-    Szöveg alapos tisztítása embedding generálás előtt.
-    Eltávolítja a HTML tageket, speciális karaktereket, URL-eket, és normalizálja a whitespace-t.
+    Szöveg tisztítása embedding generálás előtt.
+    Eltávolítja a HTML tageket, URL-eket és egyéb technikai zajt.
     """
     if not isinstance(text, str) or not text.strip():
         return ""
@@ -61,9 +61,6 @@ def clean_text_for_embedding(text: str) -> str:
     # RTF specifikus maradványok eltávolítása, amik a konverzió után maradhatnak
     text = re.sub(r'\\[a-zA-Z]+\d*\s?', '', text)
     text = re.sub(r'[{}]', '', text)
-    
-    # Egységes kisbetűre alakítás
-    text = text.lower()
     
     # Többszörös szóközök, tabulátorok, új sorok cseréje egyetlen szóközre
     text = re.sub(r'\s+', ' ', text).strip()
