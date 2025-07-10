@@ -2,114 +2,84 @@
 
 ## Projekt Áttekintés
 
-Ez a projekt egy komplex, end-to-end megoldást mutat be magyarországi bírósági határozatok hatékony szabadszöveges keresésére. A rendszer egy többlépcsős architektúrát implementál, amely kezdetben szemantikus embeddingek alapján végez hasonlóság-alapú keresést, majd megerősítéses tanulással (RL) finomhangolt intelligens ágensek segítségével optimalizálja a végső találati listát a releváns dokumentumok jobb rangsorolása érdekében.
+Ez a projekt egy komplex, end-to-end felhőalapú megoldást mutat be magyarországi bírósági határozatok hatékony szabadszöveges keresésére. A rendszer egy többlépcsős architektúrát implementál, amely Azure Blob Storage-ra épül, és a teljes adatfeldolgozási, modellezési és keresési folyamatot a felhőben kezeli. A megoldás egy szemantikus keresőt kombinál egy megerősítéses tanulással (RL) finomhangolt intelligens ágenssel, amely a találati listát optimalizálja a releváns dokumentumok jobb rangsorolása érdekében.
 
 ## Kutatási Motiváció
 
-A modern jogi információkeresés egyik legnagyobb kihívása a szabadszöveges lekérdezések hatékony feldolgozása nagy volumenű dokumentumkorpuszokon. A hagyományos kulcsszó-alapú keresési rendszerek gyakran nem képesek megfelelően kezelni a jogi terminológia komplexitását és a kontextuális jelentéseket. Ez a projekt egy innovatív megközelítést alkalmaz, amely ötvözi a modern nyelvmodell-alapú szemantikus keresést a megerősítéses tanulás adaptív optimalizálási képességeivel.
+A modern jogi információkeresés egyik legnagyobb kihívása a szabadszöveges lekérdezések hatékony feldolgozása nagy volumenű dokumentumkorpuszokon. Ez a projekt egy innovatív, felhő-natív megközelítést alkalmaz, amely ötvözi a modern nyelvmodell-alapú szemantikus keresést a megerősítéses tanulás adaptív optimalizálási képességeivel, egy skálázható és robusztus Azure-infrastruktúrán.
 
 ## Rendszer Architektúra
 
-A következő diagram ábrázolja a teljes end-to-end rendszer működését a felhasználói lekérdezéstől a megerősítéses tanulással optimalizált végső eredményig:
+A rendszer az adatkezelést teljes mértékben az Azure Blob Storage-ban centralizálja. Minden adat, a nyers dokumentumoktól kezdve a feldolgozott adatokon, embeddingeken, FAISS indexen, gráfon át egészen a betanított modellekig és kiértékelésekig, itt tárolódik. Az egyes komponensek a központi `AzureBlobStorage` segédprogramon keresztül kommunikálnak a tárolóval.
+
+A következő diagram ábrázolja a rendszer főbb logikai egységeit és az adatfolyamot:
 
 ```mermaid
 graph TD
-    A["Felhasználó"] --> B["Query Preprocessing"]
-    
-    B --> C["Embedding Generálás"]
-    
-    C --> D["FAISS Index Keresés"]
-    
-    D --> D1["Gráf Alapú Bővítés"]
-    
-    D1 --> E["Hibrid Ranking"]
-    
-    E --> F["RL Agent"]
-    
-    F --> G["Re-ranking"]
-    
-    G --> H["Végső Találati Lista"]
-    
-    H --> I["Felhasználó"]
-    
-    H --> J["Szakértői Értékelés"]
-    
-    J --> K["Reward Számítás"]
-    
-    K --> L["RL Training"]
-    
-    L --> F
-    
-    subgraph "Adatfeldolgozási Réteg"
-        M["Nyers Dokumentumok"]
-        N["Preprocessing"]
-        O["Strukturált Adatok"]
-        M --> N --> O
+    subgraph "Azure Blob Storage"
+        direction LR
+        A["raw/ (Nyers adatok)"]
+        B["processed/ (Feldolgozott adatok)"]
+        C["embeddings/ (Vektorok)"]
+        D["index/ (FAISS)"]
+        E["graph/ (Hivatkozási gráf)"]
+        F["models/ (RL Ágens)"]
+    end
+
+    subgraph "Adatfeldolgozás"
+        direction TB
+        P1["1. Preprocess<br>(preprocess_documents.py)"]
+        P2["2. Embeddings<br>(create_embeddings_cloud.py)"]
+        P3["3. FAISS Index<br>(build_faiss_index.py)"]
+        P4["4. Gráf Építés<br>(graph_builder.py)"]
+    end
+
+    subgraph "Keresés és Tanulás"
+        direction TB
+        S1["HybridSearch<br>(semantic_search.py)"]
+        S2["RankingEnv<br>(environment.py)"]
+        S3["RLAgent<br>(agent.py)"]
+        S4["Tréning / Kiértékelés<br>(train_agent.py, evaluate_agent.py)"]
     end
     
-    subgraph "Embedding Réteg"
-        P["Batch Processing"]
-        Q["Embedding Modell"]
-        R["Vektor Adatbázis"]
-        O --> P --> Q --> R
-        R --> D
-    end
+    A --> P1 --> B
+    B --> P2 --> C
+    C --> P3 --> D
+    B --> P4 --> E
     
-    subgraph "Gráf Réteg"
-        V["Dokumentum Kapcsolatok"]
-        W["Hivatkozási Hálózat"]
-        X["Jogszabály Kapcsolatok"]
-        Y["Bírósági Kapcsolatok"]
-        O --> V
-        V --> W
-        V --> X
-        V --> Y
-        W --> D1
-        X --> D1
-        Y --> D1
-    end
-    
-    subgraph "RL Optimalizálás"
-        S["Training Environment"]
-        T["Policy Network"]
-        U["Reward Model"]
-        S --> T --> U --> L
-    end
-    
+    D & E & B --> S1
+    S1 --> S2
+    S2 <--> S3
+    S3 --> F
+    F --> S3
+    S2 & S3 --> S4
+
     style A fill:#e1f5fe
-    style I fill:#e8f5e8
-    style F fill:#fff3e0
-    style G fill:#fff3e0
-    style J fill:#fce4ec
-    style L fill:#f3e5f5
+    style B fill:#e1f5fe
+    style C fill:#e1f5fe
+    style D fill:#e1f5fe
+    style E fill:#e1f5fe
+    style F fill:#e1f5fe
 ```
 
 ### Főbb Rendszerkomponensek
 
-- **Adatfeldolgozási Réteg**: Több mint 200,000 bírósági határozat feldolgozása és strukturálása. *(Megjegyzés: a pontos szám a felhasznált adatforrástól függ.)*
-- **Embedding Réteg**: `Qwen/Qwen3-Embedding-0.6B` (1024D) modell használata. Az embedding generálás GPU-t igényel (pl. A100), de a rendszer többi része CPU-n is futtatható.
-- **Gráf Réteg**: NetworkX irányított gráf, amely a dokumentumok, jogszabályok és bíróságok kapcsolatait modellezi. *(Megjegyzés: a gráf mérete—csomópontok és élek száma—az adatbázis méretétől függ.)*
-- **Hibrid Keresési Motor**: `faiss-cpu` alapú ANN keresés és gráf algoritmusok kombinációja.
-- **RL Optimalizálás**: A rendszer egy `Gymnasium` alapú `RankingEnv`-et és egy `PyTorch`-ban implementált `PolicyNetwork`-öt tartalmaz. A jutalmazási modell NDCG-alapú. A GRPO algoritmus implementálása tervezett, a jelenlegi rendszer a keretrendszer alapjait fekteti le.
-
-### Megerősítéses Tanulás alapú Re-ranking
-
-A projekt egyik fő célkitűzése egy intelligens re-ranking rendszer létrehozása, amely a DeepSeek által fejlesztett **Group Relative Policy Optimization (GRPO)** algoritmuson alapulna. A jelenlegi implementáció a szükséges környezetet és ágens-architektúrát tartalmazza, de a GRPO specifikus optimalizálási logikája még fejlesztés alatt áll.
+- **Adattárolás**: Az összes adatartefaktum (Parquet, JSON, bináris modellek) központilag, egyetlen Azure Blob Storage konténerben van tárolva, logikai "könyvtár" struktúrában.
+- **Adatfeldolgozó Szkriptek**: A `src/data_loader` és `src/embedding` modulokban található szkriptek felelősek a nyers adatok letöltéséért, feldolgozásáért és a végeredmények visszatöltéséért az Azure-ba. A folyamat teljesen automatizált és memóriában történik, ahol lehetséges.
+- **Hibrid Keresési Motor**: A `HybridSearch` osztály (`src/search/semantic_search.py`) betölti a FAISS indexet, a gráfot és a metaadatokat az Azure-ból, és egy egységes felületet biztosít a komplex keresési lekérdezésekhez.
+- **RL Optimalizálás**: A `RankingEnv` környezet és az `RLAgent` ágens önállóan kezelik a szükséges modellek és adatok betöltését az Azure-ból, valamint a tanítás során keletkezett modellek mentését.
 
 ## Technológiai Stack
 
-### Core Components
+- **Cloud Platform**: Microsoft Azure (Blob Storage)
 - **Embedding Model**: `Qwen/Qwen3-Embedding-0.6B` (HuggingFace Transformers)
 - **Vector Search**: `faiss-cpu` (Facebook AI Similarity Search)
 - **RL Framework**: PyTorch + Gymnasium
-- **Data Processing**: Pandas, NumPy, NetworkX
-- **Infrastructure**: Python 3.9+
+- **Data Processing**: Pandas, NumPy, NetworkX, PyArrow
+- **Infrastructure**: Python 3.9+, Conda
+- **Cloud SDK**: `azure-storage-blob`
 
-### Cloud Infrastructure
-- **GPU Platform (Embeddinghez)**: RunPod, Vast.ai (ajánlott)
-- **Ajánlott Hardver**: A embedding generáláshoz GPU (pl. Nvidia A100) javasolt. A keresőrendszer és az RL keretrendszer CPU-n is működőképes.
-
-## Telepítés
+## Telepítés és Beállítás
 
 A projekt futtatásához szükséges környezet beállítása `conda` segítségével javasolt az `environment.yml` fájl alapján.
 
@@ -123,34 +93,37 @@ A projekt futtatásához szükséges környezet beállítása `conda` segítség
     conda activate courtrankrl
     ```
 
+3.  **Állítsa be az Azure kapcsolati stringet:**
+    Hozzon létre egy `.env` fájlt a projekt gyökérkönyvtárában a következő tartalommal, és cserélje ki a placeholder értéket a saját Azure Storage fiókjának kapcsolati stringjére:
+
+    ```ini
+    # .env
+    AZURE_CONNECTION_STRING="<AZ_AZURE_BLOB_STORAGE_KAPCSOLATI_STRING>"
+    ```
+    A rendszer automatikusan betölti ezt a változót a `python-dotenv` csomag segítségével.
+
+## A Projekt Futtatása
+
+A teljes adatfeldolgozási és modellépítési lánc a `src/` könyvtárban található szkriptek futtatásával indítható. A szkriptek a `configs/config.py`-ban definiált Azure blob útvonalakat használják a bemeneti és kimeneti adatok kezelésére.
+
+**Példa a folyamatra:**
+1.  Töltse fel a nyers adatokat az Azure Blob Storage `raw/` "könyvtárába".
+2.  Futtassa a `src/data_loader/preprocess_documents.py` szkriptet.
+3.  Futtassa a `src/embedding/create_embeddings_cloud.py` szkriptet (GPU-s környezetben).
+4.  Futtassa a `src/data_loader/build_faiss_index.py` szkriptet.
+5.  Futtassa a `src/data_loader/graph_builder.py` szkriptet.
+6.  Indítsa el a modell tanítását a `src/reinforcement_learning/train_agent.py` szkripttel.
+
 ## Kutatási Hozzájárulások
 
-### 1. GRPO-alapú Hibrid Keresési Architektúra Tervezete
-A projekt egy olyan hibrid architektúrát vázol fel, amely kombinálja a modern szemantikus embeddingeket, a gráf alapú kapcsolati hálózatokat és a megerősítéses tanulást. A rendszer keretrendszerként szolgál a GRPO algoritmus jövőbeli, jogi dokumentumkeresési célú alkalmazásához.
+### 1. Felhő-Natív Hibrid Keresési Architektúra
+A projekt egy olyan skálázható, felhőalapú architektúrát valósít meg, amely kombinálja a szemantikus embeddingeket, a gráf alapú kapcsolati hálózatokat és a megerősítéses tanulást, teljes mértékben az Azure ökoszisztémára támaszkodva.
 
 ### 2. Magyar Jogi Domain Adaptáció
-Specializált pipeline magyar bírósági határozatok feldolgozására, amely figyelembe veszi a jogi terminológia sajátosságait és a magyar nyelv specifikus jellemzőit.
+Specializált, felhőben futtatható pipeline magyar bírósági határozatok feldolgozására, amely figyelembe veszi a jogi terminológia és a magyar nyelv sajátosságait.
 
 ### 3. Szabály-alapú Reward Modelling
 Innovatív objektív értékelési rendszer, amely szakértői annotáció helyett szabály-alapú kritériumokat használ (pontosság, relevancia, NDCG).
-
-## Jövőbeli Fejlesztési Irányok
-
-### Rövidtávú Célok
-- **GRPO implementáció befejezése**: A placeholder logika teljes értékű implementálása.
-- **Multi-modal embedding**: Dokumentum metaadatok integrálása
-- **Hierarchikus keresés**: Jogterület-specifikus specializáció
-- **Real-time learning**: Online RL algoritmusok implementálása
-
-### Hosszútávú Vízió
-- **Interdiszciplináris keresés**: Kapcsolódó jogterületek összekötése
-- **Prediktív elemzés**: Hasonló ügyek kimenetelének előrejelzése
-
-## A Projekt Hozzájárulásai
-
-Ez a projekt demonstrálja, hogy a modern gépi tanulási technikák kombinációja jelentős javulást eredményezhet a specializált domain-specifikus keresési feladatokban. A megerősítéses tanulás alkalmazása a keresési eredmények re-ranking problémájára újszerű megközelítést jelent a magyar NLP kutatásokban.
-
-A rendszer nem csupán egy technikai implementáció, hanem egy teljes kutatási framework, amely alkalmas további jogi informatikai alkalmazások fejlesztésére és a szemantikus keresés területén végzett alapkutatások támogatására.
 
 ## 🔧 Hibaelhárítás
 
@@ -160,49 +133,10 @@ Ha az alábbi hibát kapod:
 ```
 ValueError: The checkpoint you are trying to load has model type `qwen3` but Transformers does not recognize this architecture.
 ```
-
-**Megoldási lehetőségek:**
-
-#### 1. Környezet frissítése (Ajánlott)
-```bash
-# Környezet törlése és újralétrehozása frissített függőségekkel
-conda env remove -n courtrankrl
-conda env create -f environment.yml
-conda activate courtrankrl
-```
-
-#### 2. Alternatív embedding modell használata
-Módosítsd a `configs/config.py` fájlban az `EMBEDDING_MODEL` értékét:
-
-```python
-# Magyar nyelvre optimalizált alternatívák:
-EMBEDDING_MODEL = "intfloat/multilingual-e5-large"  # 1024 dimenzió
-EMBEDDING_DIMENSION = 1024
-
-# Vagy kisebb, gyorsabb modell:
-EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"  # 384 dimenzió  
-EMBEDDING_DIMENSION = 384
-```
-
-#### 3. Frissítés már létező környezetben
+Győződjön meg róla, hogy a legfrissebb függőségek vannak telepítve az `environment.yml` fájl alapján. Szükség esetén frissítse a `transformers` csomagot:
 ```bash
 conda activate courtrankrl
-pip install --upgrade transformers>=4.44.0 sentence-transformers>=3.0.0
-```
-
-### GPU Memória Problémák
-
-Embedding generálás során GPU memória hiba esetén csökkentsd a batch méretet:
-```python
-EMBEDDING_BATCH_SIZE = 4  # csökkentve 8-ról 4-re
-```
-
-### FAISS Index Építési Problémák
-
-Ha a FAISS index építése sikertelen:
-```bash
-# Ellenőrizd az adatok meglétét
-python src/data_loader/build_faiss_index.py
+pip install --upgrade transformers>=4.44.0
 ```
 
 ---
@@ -210,5 +144,5 @@ python src/data_loader/build_faiss_index.py
 **Készítette**: Zelenyiánszki Máté
 **Intézmény**: Pannon Egyetem 
 **Kutatási terület**: Természetes Nyelvfeldolgozás, Információvisszakeresés, Megerősítéses Tanulás  
-**Implementáció**: Python, PyTorch, HuggingFace Transformers  
+**Implementáció**: Python, PyTorch, HuggingFace Transformers, Azure Blob Storage
 **Licenc**: Kutatási célú felhasználás

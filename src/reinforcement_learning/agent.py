@@ -7,7 +7,11 @@ import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 from typing import List, Tuple, Dict, Any
+import io
+import logging
+
 from configs import config
+from src.utils.azure_blob_storage import AzureBlobStorage
 
 class RankingPolicyNetwork(nn.Module):
     """Neural network to parameterize the ranking policy."""
@@ -30,6 +34,13 @@ class RLAgent:
         self.policy_network = RankingPolicyNetwork(input_dim, hidden_dim, output_dim)
         self.optimizer = optim.Adam(self.policy_network.parameters(), lr=lr)
         self.output_dim = output_dim # Should match initial_top_k
+        
+        try:
+            self.blob_storage = AzureBlobStorage(container_name=config.AZURE_CONTAINER_NAME)
+        except ValueError as e:
+            logging.error(f"Azure Blob Storage inicializálási hiba az RLAgent-ben: {e}")
+            # Lehetővé tesszük a működést offline módban, de a mentés/betöltés nem fog működni.
+            self.blob_storage = None
 
     def select_action(self, state: np.ndarray) -> np.ndarray:
         """
@@ -162,19 +173,38 @@ class RLAgent:
         # return dist.log_prob(torch.FloatTensor(actual_scores)).sum()
         raise NotImplementedError
 
-    def save(self, filepath: str = config.RL_AGENT_SAVE_PATH):
-        """Save the policy network state."""
-        torch.save(self.policy_network.state_dict(), filepath)
-        print(f"RL Agent saved to {filepath}")
-
-    def load(self, filepath: str = config.RL_AGENT_SAVE_PATH):
-        """Load the policy network state."""
+    def save(self):
+        """Save the policy network state to Azure Blob Storage."""
+        if not self.blob_storage:
+            logging.warning("Nincs Azure Blob Storage kliens, a mentés kimarad.")
+            return
+            
+        filepath = config.BLOB_RL_AGENT_PATH
+        logging.info(f"RL Agent mentése ide: {filepath}")
         try:
-            self.policy_network.load_state_dict(torch.load(filepath))
-            self.policy_network.eval() # Set to evaluation mode
-            print(f"RL Agent loaded from {filepath}")
-        except FileNotFoundError:
-            print(f"Warning: RL Agent file not found at {filepath}. Starting with a new agent.")
+            buffer = io.BytesIO()
+            torch.save(self.policy_network.state_dict(), buffer)
+            buffer.seek(0)
+            self.blob_storage.upload_data(buffer.getvalue(), filepath)
+            logging.info(f"RL Agent sikeresen mentve ide: {filepath}")
         except Exception as e:
-            print(f"Error loading RL Agent from {filepath}: {e}")
+            logging.error(f"Hiba az RL Agent mentésekor: {e}", exc_info=True)
+
+    def load(self):
+        """Load the policy network state from Azure Blob Storage."""
+        if not self.blob_storage:
+            logging.warning("Nincs Azure Blob Storage kliens, a betöltés kimarad.")
+            return
+
+        filepath = config.BLOB_RL_AGENT_PATH
+        logging.info(f"RL Agent betöltése innen: {filepath}")
+        try:
+            data = self.blob_storage.download_data(filepath)
+            buffer = io.BytesIO(data)
+            self.policy_network.load_state_dict(torch.load(buffer))
+            self.policy_network.eval()
+            logging.info(f"RL Agent sikeresen betöltve innen: {filepath}")
+        except Exception as e:
+            # Ha a fájl nem létezik, az is Exception-t dob, amit itt kezelünk.
+            logging.warning(f"Nem sikerült betölteni az RL Agentet innen: {filepath}. Új modellel indulunk. Hiba: {e}")
 

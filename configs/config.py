@@ -3,41 +3,44 @@ import os
 from pathlib import Path
 import logging
 
-# --- Alapvető könyvtárak ---
+# --- Alapvető beállítások ---
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DATA_DIR = PROJECT_ROOT / 'data'
-PROCESSED_DATA_DIR = PROJECT_ROOT / 'processed_data'
-TEMP_DIR = Path("/tmp/embedding_job")
-TEMP_DIR.mkdir(exist_ok=True, parents=True)
 
 # --- Azure Blob Storage beállítások ---
-# Az AZURE_CONNECTION_STRING-et a környezeti változókból olvassuk (pl. RunPod Secrets)
 AZURE_CONNECTION_STRING = os.getenv("AZURE_CONNECTION_STRING")
 if not AZURE_CONNECTION_STRING:
     print("Figyelem: Az AZURE_CONNECTION_STRING környezeti változó nincs beállítva.")
-    # Lehet, hogy itt hibát kellene dobni, de egyelőre csak figyelmeztetünk
-    # raise ValueError("Az AZURE_CONNECTION_STRING környezeti változó nincs beállítva!")
-storage_options = {'connection_string': AZURE_CONNECTION_STRING} if AZURE_CONNECTION_STRING else {}
 
-AZURE_CONTAINER_NAME = "bhgy"
-INPUT_BLOB_NAME_CSV = "cleaned_data_for_embedding.csv"
-OUTPUT_BLOB_NAME_PARQUET = "documents_with_embeddings.parquet"
+AZURE_CONTAINER_NAME = "courtrankrl" 
 
-INPUT_AZURE_PATH = f"az://{AZURE_CONTAINER_NAME}/{INPUT_BLOB_NAME_CSV}"
-OUTPUT_AZURE_PATH = f"az://{AZURE_CONTAINER_NAME}/{OUTPUT_BLOB_NAME_PARQUET}"
+# --- Blob Storage elérési utak ---
+BLOB_RAW_DATA_DIR = "raw"
+BLOB_PROCESSED_DATA_DIR = "processed"
+BLOB_EMBEDDING_DIR = "embeddings"
+BLOB_INDEX_DIR = "index"
+BLOB_GRAPH_DIR = "graph"
+BLOB_MODELS_DIR = "models"
+BLOB_EVAL_DIR = "evaluations"
 
+BLOB_RL_AGENT_PATH = f"{BLOB_MODELS_DIR}/rl_agent.pth"
 
-# --- Lokális adatfájlok útvonalai ---
-# Nyers, feldolgozott adatok CSV-ben
-RAW_CSV_DATA_PATH = PROCESSED_DATA_DIR / 'raw_documents.csv'
-CLEANED_CSV_DATA_PATH = PROCESSED_DATA_DIR / 'cleaned_data_for_embedding.csv'
+# Feldolgozás előtti és utáni adatok
+BLOB_RAW_DOCUMENTS_CSV = f"{BLOB_RAW_DATA_DIR}/raw_documents.csv"
+BLOB_CLEANED_DATA_FOR_EMBEDDING_CSV = f"{BLOB_PROCESSED_DATA_DIR}/cleaned_data_for_embedding.csv"
+BLOB_CLEANED_DOCUMENTS_PARQUET = f"{BLOB_PROCESSED_DATA_DIR}/cleaned_documents.parquet"
 
-# Tisztított, végleges adatok Parquet formátumban
-CLEANED_PARQUET_DATA_PATH = PROCESSED_DATA_DIR / 'cleaned_documents.parquet'
+# Embeddingek
+BLOB_DOCUMENTS_WITH_EMBEDDINGS_PARQUET = f"{BLOB_EMBEDDING_DIR}/documents_with_embeddings.parquet"
 
-# Lokális átmeneti fájlok az embedding generáláshoz
-CHUNKS_PARQUET_PATH = TEMP_DIR / "temp_chunks.parquet"
-CHUNK_EMBEDDINGS_PATH = TEMP_DIR / "temp_chunks_with_embeddings.parquet"
+# FAISS Index és kapcsolódó fájlok
+BLOB_FAISS_INDEX = f"{BLOB_INDEX_DIR}/faiss_index.bin"
+BLOB_FAISS_DOC_ID_MAP = f"{BLOB_INDEX_DIR}/doc_id_map.json"
+
+# Gráf
+BLOB_GRAPH = f"{BLOB_GRAPH_DIR}/document_graph.gpickle"
+
+# Kiértékelések
+BLOB_EXPERT_EVALUATIONS_CSV = f"{BLOB_EVAL_DIR}/expert_evaluations.csv"
 
 
 # --- Modell és darabolás beállítások ---

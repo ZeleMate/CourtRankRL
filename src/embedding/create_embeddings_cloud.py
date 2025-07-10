@@ -7,11 +7,12 @@ import torch
 import time
 import os
 import sys
-import glob
+import tempfile
+import shutil
+import io
 from tqdm.auto import tqdm
 from pathlib import Path
 import torch.multiprocessing as mp
-from azure.storage.blob import BlobServiceClient
 from sentence_transformers import SentenceTransformer
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 
@@ -23,12 +24,13 @@ if str(project_root) not in sys.path:
 
 try:
     from configs import config
+    from src.utils.azure_blob_storage import AzureBlobStorage
 except ImportError as e:
-    print(f"HIBA: configs modul import sikertelen: {e}")
+    print(f"HIBA: Modul importálása sikertelen: {e}")
     sys.exit(1)
 
 # ==============================================================================
-# === WORKER LOGIKA (A FŐ SZKRIPTBE INTEGRÁLVA) ===
+# === WORKER LOGIKA ===
 # ==============================================================================
 
 class DocumentProcessor:
@@ -57,7 +59,13 @@ class EmbeddingGenerator:
     def load_model(self):
         if self.model is None:
             print(f"[{self.device}] Modell betöltése: {self.model_name}...")
-            self.model = SentenceTransformer(self.model_name, device=self.device, trust_remote_code=True)
+            # A modell cache-elését egy ideiglenes könyvtárba irányítjuk, hogy ne szemelje tele a RunPod tárhelyet
+            self.model = SentenceTransformer(
+                self.model_name, 
+                device=self.device, 
+                trust_remote_code=True,
+                cache_folder=os.path.join(tempfile.gettempdir(), 'sentence_transformers_cache')
+            )
             print(f"[{self.device}] Modell betöltve.")
     
     def generate_embeddings(self, texts):
@@ -126,148 +134,110 @@ def process_data_chunk_on_worker(args):
 # === FŐ VEZÉRLŐ LOGIKA ===
 # ==============================================================================
 
-# === 1. FELHŐS KONFIGURÁCIÓ ===
-# --- Azure ---
-AZURE_CONNECTION_STRING = os.getenv("AZURE_CONNECTION_STRING")
-AZURE_CONTAINER_NAME = "bhgy"  # CSERÉLD LE a saját konténered nevére!
-INPUT_BLOB_NAME = config.CLEANED_PARQUET_DATA_PATH.name
-OUTPUT_BLOB_NAME = "documents_with_embeddings_final.parquet"
-
-# --- Modell és Feldolgozás ---
-MODEL_NAME = "Qwen/Qwen3-Embedding-0.6B"
-BATCH_SIZE = 96
-CHUNK_SIZE_CHARS = 5000
-CHUNK_OVERLAP_CHARS = 500
-
-# --- Lokális útvonalak a RunPodon belül ---
-LOCAL_TEMP_DIR = Path("/workspace/embedding_job_temp")
-LOCAL_INPUT_FILE = LOCAL_TEMP_DIR / INPUT_BLOB_NAME
-
-# === 2. FŐ VEZÉRLŐ FÜGGVÉNYEK ===
-
-def download_from_azure(conn_str, container, blob_name, local_path):
-    """Letölt egy fájlt az Azure Blob Storage-ból."""
-    if not conn_str:
-        raise ValueError("Azure connection string nincs beállítva (AZURE_CONNECTION_STRING)!")
-    
-    if local_path.exists():
-        print(f"✅ A bemeneti fájl már létezik lokálisan: {local_path}")
-        return
-    
-    print(f"⬇️ Fájl letöltése: az://{container}/{blob_name} -> {local_path}")
-    local_path.parent.mkdir(exist_ok=True, parents=True)
-    
-    blob_service_client = BlobServiceClient.from_connection_string(conn_str)
-    blob_client = blob_service_client.get_blob_client(container=container, blob=blob_name)
-    
-    with open(local_path, "wb") as download_file:
-        downloader = blob_client.download_blob(max_concurrency=4)
-        download_file.write(downloader.readall())
-    print("✅ Letöltés sikeres.")
-
-def upload_to_azure(conn_str, container, blob_name, local_path):
-    """Feltölt egy fájlt az Azure Blob Storage-ba."""
-    if not conn_str:
-        raise ValueError("Azure connection string nincs beállítva (AZURE_CONNECTION_STRING)!")
-        
-    print(f"⬆️ Fájl feltöltése: {local_path} -> az://{container}/{blob_name}")
-    blob_service_client = BlobServiceClient.from_connection_string(conn_str)
-    blob_client = blob_service_client.get_blob_client(container=container, blob=blob_name)
-    
-    with open(local_path, "rb") as data:
-        blob_client.upload_blob(data, overwrite=True, max_concurrency=4)
-    print("✅ Feltöltés sikeres.")
-
-# === 3. FŐ FELDOLGOZÁSI LOGIKA ===
 def main():
+    """Fő vezérlő függvény az embedding generáláshoz."""
     if not torch.cuda.is_available():
         print("❌ HIBA: CUDA nem elérhető. A szkript csak GPU-s környezetben futtatható.")
         return
         
     NUM_GPUS = torch.cuda.device_count()
     print(f"🔥 Talált GPU-k száma: {NUM_GPUS}")
-    
-    # 1. Bemeneti fájl letöltése
+
+    # Azure Blob Storage kliens
     try:
-        download_from_azure(AZURE_CONNECTION_STRING, AZURE_CONTAINER_NAME, INPUT_BLOB_NAME, LOCAL_INPUT_FILE)
-    except Exception as e:
-        print(f"❌ Hiba a letöltés során: {e}")
+        blob_storage = AzureBlobStorage(container_name=config.AZURE_CONTAINER_NAME)
+    except ValueError as e:
+        print(f"❌ Hiba az Azure kliens inicializálása közben: {e}")
         return
-        
-    # 2. Fő feldolgozási ciklus
-    print("\n--- Feldolgozás indítása több GPU-n (Fájl-alapú IPC) ---")
-    main_start_time = time.time()
-    
-    mp.set_start_method('spawn', force=True)
-    
-    df_full = pd.read_parquet(LOCAL_INPUT_FILE)
-    total_rows = len(df_full)
-    
-    # Az adatok egyenlő darabokra osztása a GPU-k között
-    # Ez a teljes adathalmazra vonatkozik, nem daraboljuk tovább.
-    # Minden worker egy nagy szeletet kap.
-    df_chunks_for_gpus = np.array_split(df_full, NUM_GPUS)
-    del df_full; gc.collect()
 
-    worker_args = []
-    temp_files_to_clean = []
+    # Ideiglenes könyvtár létrehozása a feladat idejére
+    local_temp_dir = Path(tempfile.mkdtemp(prefix="embedding_job_"))
+    print(f"📁 Ideiglenes könyvtár létrehozva: {local_temp_dir}")
     
-    print("Ideiglenes fájlok létrehozása a workereknek...")
-    for i, df_worker_chunk in enumerate(df_chunks_for_gpus):
-        if not df_worker_chunk.empty:
-            input_path = LOCAL_TEMP_DIR / f"input_worker_{i}.parquet"
-            output_path = LOCAL_TEMP_DIR / f"output_worker_{i}.parquet"
-            
-            df_worker_chunk.to_parquet(input_path)
-            temp_files_to_clean.append(input_path)
-            
-            worker_args.append((
-                i, f'cuda:{i}', MODEL_NAME, BATCH_SIZE, 
-                CHUNK_SIZE_CHARS, CHUNK_OVERLAP_CHARS, 
-                input_path, output_path
-            ))
+    try:
+        # 1. Bemeneti fájl letöltése
+        input_blob_path = config.BLOB_CLEANED_DOCUMENTS_PARQUET
+        local_input_file = local_temp_dir / Path(input_blob_path).name
 
-    # 3. Párhuzamos feldolgozás
-    print("Worker processzek indítása...")
-    with mp.Pool(processes=NUM_GPUS) as pool:
-        result_paths = pool.map(process_data_chunk_on_worker, worker_args)
-    
-    # 4. Eredmények összefűzése
-    print("\nAdatok összefűzése az ideiglenes fájlokból...")
-    valid_result_paths = [p for p in result_paths if p is not None]
-    
-    if valid_result_paths:
-        final_df = pd.concat(
-            [pd.read_parquet(f) for f in valid_result_paths], 
-            ignore_index=True
-        )
-        
-        # 5. Végső feltöltés
-        final_output_path = LOCAL_TEMP_DIR / "final_embeddings.parquet"
-        final_df.to_parquet(final_output_path)
-        temp_files_to_clean.extend(valid_result_paths)
-        temp_files_to_clean.append(final_output_path)
-        
+        print(f"⬇️ Bemeneti adatok letöltése: {input_blob_path}")
         try:
-            upload_to_azure(AZURE_CONNECTION_STRING, AZURE_CONTAINER_NAME, OUTPUT_BLOB_NAME, final_output_path)
+            input_data = blob_storage.download_data(input_blob_path)
+            with open(local_input_file, "wb") as f:
+                f.write(input_data)
+            del input_data
+            gc.collect()
+            print("✅ Letöltés sikeres.")
         except Exception as e:
-            print(f"❌ Hiba a végső fájl feltöltése során: {e}")
+            print(f"❌ Hiba a letöltés során: {e}")
+            return
+            
+        # 2. Fő feldolgozási ciklus
+        print("\n--- Feldolgozás indítása több GPU-n ---")
+        main_start_time = time.time()
         
-        print(f"\n📊 Összesen {len(final_df):,} / {total_rows} dokumentum embeddingje jött létre.")
-    else:
-        print("⚠️ Nem lett feldolgozva adat, egyetlen worker sem tért vissza eredménnyel.")
+        mp.set_start_method('spawn', force=True)
+        
+        df_full = pd.read_parquet(local_input_file)
+        
+        if df_full.empty:
+            print("⚠️ A bemeneti DataFrame üres, nincs mit feldolgozni.")
+            return
 
-    # 6. Takarítás
-    print("Ideiglenes fájlok törlése...")
-    for f in temp_files_to_clean:
-        try:
-            os.remove(f)
-        except OSError:
-            pass
-    if LOCAL_TEMP_DIR.exists(): LOCAL_TEMP_DIR.rmdir()
+        df_chunks_for_gpus = np.array_split(df_full, NUM_GPUS)
+        del df_full; gc.collect()
 
-    total_time_minutes = (time.time() - main_start_time) / 60
-    print(f"\n🎉 Feldolgozás befejezve {total_time_minutes:.2f} perc alatt.")
+        worker_args = []
+        
+        print("Ideiglenes fájlok létrehozása a workereknek...")
+        for i, df_worker_chunk in enumerate(df_chunks_for_gpus):
+            if not df_worker_chunk.empty:
+                input_path = local_temp_dir / f"input_worker_{i}.parquet"
+                output_path = local_temp_dir / f"output_worker_{i}.parquet"
+                
+                df_worker_chunk.to_parquet(input_path)
+                
+                worker_args.append((
+                    i, f'cuda:{i}', config.MODEL_NAME, config.BATCH_SIZE, 
+                    config.CHUNK_SIZE, config.CHUNK_OVERLAP, 
+                    str(input_path), str(output_path)
+                ))
 
-if __name__ == "__main__":
+        # 3. Párhuzamos feldolgozás
+        print(f"Worker processzek indítása ({len(worker_args)} db)...")
+        with mp.Pool(processes=NUM_GPUS) as pool:
+            result_paths = pool.map(process_data_chunk_on_worker, worker_args)
+        
+        # 4. Eredmények összefűzése
+        print("\nAdatok összefűzése az ideiglenes fájlokból...")
+        valid_result_paths = [p for p in result_paths if p is not None and Path(p).exists()]
+        
+        if valid_result_paths:
+            final_df = pd.concat(
+                [pd.read_parquet(f) for f in valid_result_paths], 
+                ignore_index=True
+            )
+            
+            # 5. Végső feltöltés
+            print(f"⬆️ Feldolgozott adatok feltöltése ({len(final_df):,} sor)...")
+            output_blob_path = config.BLOB_DOCUMENTS_WITH_EMBEDDINGS_PARQUET
+            
+            buffer = io.BytesIO()
+            final_df.to_parquet(buffer, index=False, engine='pyarrow', compression='snappy')
+            buffer.seek(0)
+            
+            blob_storage.upload_data(data=buffer.getvalue(), blob_path=output_blob_path)
+            
+            print(f"✅ Feltöltés sikeres ide: {config.AZURE_CONTAINER_NAME}/{output_blob_path}")
+        else:
+            print("⚠️ Nem keletkezett feldolgozott adat.")
+
+        total_time = time.time() - main_start_time
+        print(f"\n--- Feldolgozás befejezve {total_time:.2f} másodperc alatt ---")
+
+    finally:
+        # 6. Ideiglenes könyvtár törlése
+        print(f"🗑️ Ideiglenes könyvtár törlése: {local_temp_dir}")
+        shutil.rmtree(local_temp_dir, ignore_errors=True)
+
+if __name__ == '__main__':
     main() 

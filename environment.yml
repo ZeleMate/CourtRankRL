@@ -24,4 +24,5 @@ dependencies:
     - gymnasium
     - matplotlib
     - seaborn
-    - beautifulsoup4 
+    - beautifulsoup4
+    - azure-storage-blob 

@@ -1,108 +1,124 @@
 """
-Agent kiértékelése: Reinforcement Learning alapú rangsoroló teljesítményének mérése.
+Agent kiértékelése: A reinforcement learning alapú rangsoroló teljesítményének mérése
+a szakértői értékelések alapján. A rendszer az Azure-ból tölti be az adatokat.
 """
-import os
 import sys
-import argparse
+from pathlib import Path
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
+import io
+import logging
 
 # Add project root to sys.path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+project_root = Path(__file__).resolve().parent.parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
 
-from src.models.embedding import load_embedding_model
-from src.data_loader.legal_docs import load_documents_from_folder
-from src.search.semantic_search import SemanticSearch
 from src.reinforcement_learning.agent import RLAgent
-from src.reinforcement_learning.reward_models.reward import load_expert_evaluations, get_relevance_scores_for_ranking, calculate_ndcg
+from src.reinforcement_learning.environment import RankingEnv
+from src.reinforcement_learning.reward_models.reward import compute_ndcg
+from src.utils.azure_blob_storage import AzureBlobStorage
 from configs import config
 
-def parse_args():
-    parser = argparse.ArgumentParser(description="Evaluate RL Ranking Agent")
-    parser.add_argument("--eval_path", type=str, default=config.EXPERT_EVAL_PATH,
-                        help="Path to expert evaluation data CSV")
-    parser.add_argument("--doc_path", type=str, default=config.RAW_DATA_PATH,
-                        help="Path to folder containing documents")
-    parser.add_argument("--model", type=str, default=config.EMBEDDING_MODEL_NAME,
-                        help="Embedding model name")
-    parser.add_argument("--top_k", type=int, default=config.FINAL_TOP_K,
-                        help="NDCG@k értékeléshez a k")
-    return parser.parse_args()
+# --- Beállítások ---
+EVALUATION_TOP_K = 10 # NDCG@k
+
+# Loggolás beállítása
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+def load_expert_evaluations_from_azure(blob_storage: AzureBlobStorage) -> pd.DataFrame:
+    """Loads expert evaluation data from a CSV in Azure Blob Storage."""
+    logging.info(f"Szakértői értékelések letöltése: {config.BLOB_EXPERT_EVALUATIONS_CSV}")
+    try:
+        data = blob_storage.download_data(config.BLOB_EXPERT_EVALUATIONS_CSV)
+        df = pd.read_csv(io.BytesIO(data))
+        logging.info(f"✅ Sikeresen betöltve {len(df)} értékelés.")
+        return df
+    except Exception as e:
+        logging.error(f"Hiba a szakértői értékelések letöltésekor: {e}", exc_info=True)
+        return pd.DataFrame()
+
+def get_relevance_scores(ranked_doc_ids: list[str], eval_df: pd.DataFrame, query: str) -> list[float]:
+    """Retrieves relevance scores for a ranked list of document IDs."""
+    query_evals = eval_df[eval_df['query'] == query].set_index('doc_id')
+    return [query_evals.loc[doc_id, 'relevance'] if doc_id in query_evals.index else 0.0 for doc_id in ranked_doc_ids]
 
 def main():
-    args = parse_args()
-    print("Loading expert evaluations...")
-    eval_df = load_expert_evaluations(args.eval_path)
+    """Main evaluation loop for the RL agent."""
+    logging.info("🚀 RL ÜGYNÖK KIÉRTÉKELÉSÉNEK INDÍTÁSA")
+
+    # 1. Erőforrások inicializálása
+    try:
+        blob_storage = AzureBlobStorage(container_name=config.AZURE_CONTAINER_NAME)
+        # Az env inicializálja a keresőt is, amire szükségünk van a jelöltekhez
+        env = RankingEnv(initial_top_k=EVALUATION_TOP_K)
+        
+        agent_input_dim = env.observation_space.shape[0]
+        agent_output_dim = env.action_space.shape[0]
+        agent = RLAgent(input_dim=agent_input_dim, output_dim=agent_output_dim)
+        agent.load() # Betöltjük a tanított ügynököt
+
+    except Exception as e:
+        logging.error(f"Hiba az inicializálás során: {e}", exc_info=True)
+        sys.exit(1)
+
+    # 2. Szakértői értékelések betöltése
+    eval_df = load_expert_evaluations_from_azure(blob_storage)
     if eval_df.empty:
-        print("Error: No evaluation data found. Cannot evaluate.")
-        return
-    queries = eval_df['query'].unique()
-    print(f"Found {len(queries)} queries for evaluation.")
+        logging.error("Nincsenek szakértői értékelések, a kiértékelés leáll.")
+        sys.exit(1)
+        
+    queries_for_eval = eval_df['query'].unique().tolist()
+    logging.info(f"Kiértékelés {len(queries_for_eval)} egyedi lekérdezés alapján.")
 
-    print("Loading embedding model and documents...")
-    model = load_embedding_model(args.model)
-    documents = load_documents_from_folder(args.doc_path)
-    if not documents:
-        print("Error: No documents found.")
-        return
-    search_engine = SemanticSearch(model, documents)
+    # 3. Kiértékelési ciklus
+    results_data = []
+    for query in tqdm(queries_for_eval, desc="Lekérdezések kiértékelése"):
+        # Kezdeti állapot és jelöltek lekérése
+        state, info = env.reset(query=query)
+        initial_candidates = info['candidates']
+        
+        # Kezdeti (szemantikus) rangsor NDCG-je
+        initial_doc_ids = [res.doc_id for res in initial_candidates]
+        initial_relevance = get_relevance_scores(initial_doc_ids, eval_df, query)
+        initial_ndcg = compute_ndcg(np.array(initial_relevance), k=EVALUATION_TOP_K)
+        
+        # Ügynök általi újra-rangsorolás
+        action = agent.select_action(state)
+        
+        # A step metódus elvégzi a rangsorolást
+        _, _, _, _, step_info = env.step(action)
+        reranked_results = step_info['reranked_results']
+        reranked_doc_ids = [res.doc_id for res in reranked_results]
 
-    print("Loading RL agent...")
-    agent_input_dim = config.POLICY_NETWORK_PARAMS['input_dim']
-    agent_output_dim = config.INITIAL_TOP_K
-    rl_agent = RLAgent(input_dim=agent_input_dim,
-                       output_dim=agent_output_dim,
-                       hidden_dim=config.POLICY_NETWORK_PARAMS['hidden_dim'])
-    rl_agent.load()
-
-    results = []
-    for query in tqdm(queries, desc="Evaluating queries"):
-        initial_candidates = search_engine.search_candidates(query, config.INITIAL_TOP_K)
-        if not initial_candidates:
-            continue
-        query_embedding = search_engine.model.encode([query])[0].astype(np.float32)
-        candidate_embeddings = np.zeros((config.INITIAL_TOP_K, query_embedding.shape[0]), dtype=np.float32)
-        valid_indices = [i for i, doc in enumerate(initial_candidates) if doc[0] != -1]
-        texts_to_encode = [initial_candidates[i][1] for i in valid_indices]
-        if texts_to_encode:
-            embeddings = search_engine.model.encode(texts_to_encode).astype(np.float32)
-            if len(valid_indices) == embeddings.shape[0]:
-                candidate_embeddings[valid_indices, :] = embeddings
-            else:
-                continue
-        state_parts = [query_embedding] + list(candidate_embeddings)
-        state = np.concatenate(state_parts).astype(np.float32)
-        expected_len = config.POLICY_NETWORK_PARAMS['input_dim']
-        if state.shape[0] != expected_len:
-            if state.shape[0] < expected_len:
-                padded_state = np.zeros(expected_len, dtype=np.float32)
-                padded_state[:state.shape[0]] = state
-                state = padded_state
-            else:
-                state = state[:expected_len]
-        action_scores = rl_agent.select_action(state)
-        scored_candidates = list(zip(initial_candidates, action_scores))
-        scored_candidates.sort(key=lambda x: x[1], reverse=True)
-        rl_ranked_list = [item[0] for item in scored_candidates]
-        initial_relevance = get_relevance_scores_for_ranking(query, initial_candidates, eval_df)
-        rl_relevance = get_relevance_scores_for_ranking(query, rl_ranked_list, eval_df)
-        k = args.top_k
-        initial_ndcg = calculate_ndcg(initial_relevance, k)
-        rl_ndcg = calculate_ndcg(rl_relevance, k)
-        results.append({
+        # Újra-rangsorolt lista NDCG-je
+        reranked_relevance = get_relevance_scores(reranked_doc_ids, eval_df, query)
+        reranked_ndcg = compute_ndcg(np.array(reranked_relevance), k=EVALUATION_TOP_K)
+        
+        results_data.append({
             "query": query,
-            f"initial_ndcg@{k}": initial_ndcg,
-            f"rl_ndcg@{k}": rl_ndcg,
-            "improvement": rl_ndcg - initial_ndcg
+            f"initial_ndcg@{EVALUATION_TOP_K}": initial_ndcg,
+            f"reranked_ndcg@{EVALUATION_TOP_K}": reranked_ndcg,
+            "improvement": reranked_ndcg - initial_ndcg
         })
-    if not results:
-        print("No queries were successfully evaluated.")
+
+    if not results_data:
+        logging.warning("Nem sikerült egyetlen lekérdezést sem kiértékelni.")
         return
-    results_df = pd.DataFrame(results)
-    print("\n--- Evaluation Summary ---")
+
+    # 4. Eredmények összesítése és megjelenítése
+    results_df = pd.DataFrame(results_data)
+    print("\n--- KIÉRTÉKELÉSI ÖSSZEFOGLALÓ ---")
+    print(results_df.to_string())
+    
+    print("\n--- STATISZTIKÁK ---")
     print(results_df.describe())
-    print("\nAverage Improvement:", results_df['improvement'].mean())
+    
+    avg_improvement = results_df['improvement'].mean()
+    print(f"\nÁtlagos NDCG javulás: {avg_improvement:+.4f}")
+    
+    logging.info("🎉 Kiértékelés befejezve.")
 
 if __name__ == "__main__":
     main()

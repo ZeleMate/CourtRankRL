@@ -1,25 +1,32 @@
 # Ez a szkript felelős a dokumentumok metaadataiból egy hálózati gráf felépítéséért,
 # amely a dokumentumok, jogszabályok és bíróságok közötti kapcsolatokat reprezentálja.
-import os
 import sys
-import argparse
 import pandas as pd
 import networkx as nx
 import json
+import io
+import pickle
 from tqdm import tqdm
 import logging
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
+from pathlib import Path
 
-# Loggolás alapbeállítása (a config.py felülírhatja, ha ott is van basicConfig)
+# Loggolás alapbeállítása
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Projekt gyökérkönyvtárának hozzáadása a Python útvonalhoz
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-sys.path.insert(0, project_root)
+project_root = Path(__file__).resolve().parent.parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
 
-# Konfigurációs beállítások importálása
-from configs import config
+# Konfigurációs beállítások és segédprogramok importálása
+try:
+    from configs import config
+    from src.utils.azure_blob_storage import AzureBlobStorage
+except ImportError as e:
+    print(f"HIBA: Modul importálása sikertelen: {e}")
+    sys.exit(1)
 
 # --- Segédfüggvények ---
 
@@ -53,10 +60,10 @@ def is_valid_doc_id(doc_id):
 
 # --- Fő gráfépítő logika ---
 
-def build_graph(df, stop_jogszabalyok):
+def build_graph(df: pd.DataFrame, stop_jogszabalyok: set) -> nx.DiGraph:
     """Felépíti a NetworkX gráfot a bemeneti DataFrame alapján - optimalizált verzió."""
-    G = nx.DiGraph() # Irányított gráf létrehozása
-    logging.info("Optimalizált gráfépítés megkezdése...")
+    G = nx.DiGraph()
+    logging.info("Gráfépítés megkezdése...")
 
     # Batch műveletek előkészítése
     batch_nodes = []
@@ -127,56 +134,17 @@ def build_graph(df, stop_jogszabalyok):
     
     G.add_edges_from(edges_with_attrs)
 
-    logging.info(f"Optimalizált gráfépítés befejezve. Csomópontok száma: {G.number_of_nodes()}, Élek száma: {G.number_of_edges()}")
+    # Gráf metaadatok hozzáadása
+    G.graph['creation_timestamp_utc'] = datetime.now(timezone.utc).isoformat()
+    G.graph['document_count'] = sum(1 for _, attrs in G.nodes(data=True) if attrs.get('type') == 'dokumentum')
+    G.graph['stop_jogszabalyok_count'] = len(stop_jogszabalyok)
+
+    logging.info(f"Gráfépítés befejezve. Csomópontok: {G.number_of_nodes()}, Élek: {G.number_of_edges()}")
     return G
 
-def save_graph(G, json_path, graphml_path):
-    """Elmenti a gráfot JSON és GraphML formátumban is."""
-    # Save JSON format
-    try:
-        logging.info(f"Saving graph to {json_path} (JSON format)...")
-        graph_data = nx.node_link_data(G)
-        os.makedirs(os.path.dirname(json_path), exist_ok=True)
-        with open(json_path, 'w', encoding='utf-8') as f:
-            json.dump(graph_data, f, ensure_ascii=False, indent=4)
-        logging.info("Graph saved successfully in JSON format.")
-    except Exception as e:
-        logging.error(f"Failed to save graph to JSON ({json_path}): {e}")
-
-    # Save GraphML format
-    try:
-        logging.info(f"Saving graph to {graphml_path} (GraphML format)...")
-        os.makedirs(os.path.dirname(graphml_path), exist_ok=True)
-        nx.write_graphml(G, graphml_path)
-        logging.info("Graph saved successfully in GraphML format.")
-    except Exception as e:
-        logging.error(f"Failed to save graph to GraphML ({graphml_path}): {e}")
-
-def save_graph_metadata(G, stop_jogszabalyok_set, output_path):
-    """Elmenti a generált gráf metaadatait egy JSON fájlba."""
-    logging.info(f"Saving graph metadata to {output_path}...")
-    try:
-        relation_types = {data.get('relation_type') for _, _, data in G.edges(data=True) if 'relation_type' in data}
-        
-        metadata = {
-            "generation_timestamp_utc": datetime.now(timezone.utc).isoformat(),
-            "node_count": G.number_of_nodes(),
-            "edge_count": G.number_of_edges(),
-            "stop_jogszabalyok_count": len(stop_jogszabalyok_set),
-            "stop_jogszabalyok_list": sorted(list(stop_jogszabalyok_set)),
-            "relation_types": sorted(list(relation_types))
-        }
-
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        with open(output_path, 'w', encoding='utf-8') as f:
-            json.dump(metadata, f, ensure_ascii=False, indent=4)
-        logging.info("Graph metadata saved.")
-    except Exception as e:
-        logging.error(f"Failed to save graph metadata to {output_path}: {e}")
-
-def determine_stop_jogszabalyok(df, column_name='Jogszabalyhelyek', threshold_percentage=0.005):
+def determine_stop_jogszabalyok(df: pd.DataFrame, column_name='Jogszabalyhelyek', threshold_percentage=0.01) -> set:
     """Meghatározza a gyakori jogszabályhelyeket, amelyek "stop szavakként" funkcionálnak."""
-    logging.info(f"Determining stop jogszabalyok with threshold {threshold_percentage*100}%...")
+    logging.info(f"Stop jogszabályok meghatározása {threshold_percentage*100:.2f}% küszöbértékkel...")
     
     if column_name not in df.columns:
         logging.warning(f"Column '{column_name}' not found in DataFrame. Cannot determine stop words.")
@@ -187,85 +155,58 @@ def determine_stop_jogszabalyok(df, column_name='Jogszabalyhelyek', threshold_pe
         all_references.extend(parse_list_string(references_str))
     
     if not all_references:
-        logging.warning("No legal references found to analyze.")
+        logging.warning("Nincsenek jogszabályi hivatkozások az elemzéshez.")
         return set()
     
     reference_counts = Counter(all_references)
     threshold_count = len(df) * threshold_percentage
     stop_set = {ref for ref, count in reference_counts.items() if count > threshold_count}
     
-    logging.info(f"Found {len(stop_set)} stop jogszabalyok occurring in more than {threshold_percentage*100}% of documents.")
+    logging.info(f"Talált {len(stop_set)} stop jogszabály, amelyek az iratok több mint {threshold_percentage*100:.2f}%-ában előfordulnak.")
     return stop_set
 
-def parse_args():
-    """Parancssori argumentumok feldolgozása."""
-    parser = argparse.ArgumentParser(description="NetworkX Gráf Építése Dokumentum Metaadatokból")
-    parser.add_argument(
-        "--input",
-        type=str,
-        default=config.PROCESSED_PARQUET_DATA_PATH,
-        help="Path to the input Parquet file (default: from config.py)"
-    )
-    parser.add_argument(
-        "--output-json",
-        type=str,
-        default=config.GRAPH_OUTPUT_JSON_PATH,
-        help="Path to save the output graph in JSON format (default: from config.py)"
-    )
-    parser.add_argument(
-        "--output-graphml",
-        type=str,
-        default=config.GRAPH_OUTPUT_GRAPHML_PATH,
-        help="Path to save the output graph in GraphML format (default: from config.py)"
-    )
-    parser.add_argument(
-        "--output-metadata",
-        type=str,
-        default=config.GRAPH_METADATA_PATH,
-        help="Path to save the graph metadata JSON (default: from config.py)"
-    )
-    parser.add_argument(
-        "--stopword-threshold",
-        type=float,
-        default=0.01,  # Default to 1%
-        help="Threshold percentage (0.0 to 1.0) for determining stop jogszabalyok (default: 0.01 = 1%)"
-    )
-    parser.add_argument(
-        "--stopword-column",
-        type=str,
-        default='Jogszabalyhelyek',
-        help="Column name containing legal references for stop word analysis (default: Jogszabalyhelyek)"
-    )
-    return parser.parse_args()
-
 def main():
-    """Fő függvény az adatok betöltéséhez, a gráf felépítéséhez és a kimenetek mentéséhez."""
-    args = parse_args()
+    """Fő függvény az adatok betöltéséhez, a gráf felépítéséhez és a kimenetek mentéséhez Azure integrációval."""
+    logging.info("🚀 GRÁFÉPÍTŐ INDÍTÁSA AZURE BLOB STORAGE ALAPJÁN")
 
-    # Validate threshold
-    if not 0.0 <= args.stopword_threshold <= 1.0:
-        logging.error("Stopword threshold must be between 0.0 and 1.0.")
-        sys.exit(1)
-
-    # Load data
+    # Azure Blob Storage kliens
     try:
-        df = pd.read_parquet(args.input)
-        logging.info(f"Loaded {len(df)} documents from {args.input}.")
-    except FileNotFoundError:
-        logging.error(f"Input file not found: {args.input}")
-        sys.exit(1)
-    except Exception as e:
-        logging.error(f"Failed to load data: {e}")
+        blob_storage = AzureBlobStorage(container_name=config.AZURE_CONTAINER_NAME)
+    except ValueError as e:
+        logging.error(e)
         sys.exit(1)
 
-    # Process data and build graph
-    stop_jogszabalyok = determine_stop_jogszabalyok(df, args.stopword_column, args.stopword_threshold)
+    # 1. Adatok letöltése
+    input_blob = config.BLOB_CLEANED_DOCUMENTS_PARQUET
+    logging.info(f"Adatok letöltése: {input_blob}")
+    try:
+        data = blob_storage.download_data(input_blob)
+        df = pd.read_parquet(io.BytesIO(data))
+        logging.info(f"✅ Adatok betöltve: {len(df):,} dokumentum.")
+    except Exception as e:
+        logging.error(f"Hiba a bemeneti adatok letöltésekor: {e}", exc_info=True)
+        sys.exit(1)
+    
+    # 2. Stop szavak meghatározása
+    stop_jogszabalyok = determine_stop_jogszabalyok(df)
+
+    # 3. Gráf építése
     G = build_graph(df, stop_jogszabalyok)
 
-    # Save outputs
-    save_graph(G, args.output_json, args.output_graphml)
-    save_graph_metadata(G, stop_jogszabalyok, args.output_metadata)
-    logging.info("Graph building process finished.")
+    # 4. Gráf mentése és feltöltése
+    output_blob = config.BLOB_GRAPH
+    logging.info(f"Gráf mentése és feltöltése ide: {output_blob}")
+    try:
+        buffer = io.BytesIO()
+        pickle.dump(G, buffer)
+        buffer.seek(0)
+        blob_storage.upload_data(buffer.getvalue(), output_blob)
+        logging.info("✅ Gráf sikeresen feltöltve.")
+    except Exception as e:
+        logging.error(f"Hiba a gráf mentése vagy feltöltése közben: {e}", exc_info=True)
+        sys.exit(1)
+
+    logging.info("\n🎉 GRÁFÉPÍTÉS BEFEJEZVE!")
 
 if __name__ == "__main__":
     main()
