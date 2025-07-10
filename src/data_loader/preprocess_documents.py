@@ -31,6 +31,9 @@ except ImportError as e:
 # Loggolás beállítása
 logging.basicConfig(level=config.LOGGING_LEVEL, format=config.LOGGING_FORMAT)
 
+# Az Azure SDK túlzottan bőbeszédű naplózásának korlátozása WARNING szintre.
+logging.getLogger("azure").setLevel(logging.WARNING)
+
 # Azure Blob Storage kliens inicializálása
 try:
     blob_storage = AzureBlobStorage(container_name=config.AZURE_CONTAINER_NAME)
@@ -201,10 +204,20 @@ for base_filename, text_blob_path in tqdm(document_blobs.items(), desc="Dokument
 # ===== EGYESÍTETT, TISZTÍTOTT PARQUET LÉTREHOZÁSA ÉS FELTÖLTÉSE AZURE BLOB-BA =====
 logging.info("Feldolgozás befejezve, egységes DataFrame létrehozása és feltöltése...")
 
+def clean_surrogates(text):
+    """Eltávolítja az érvénytelen surrogate párokat a stringből."""
+    if not isinstance(text, str):
+        return text
+    return text.encode('utf-8', 'surrogateescape').decode('utf-8', 'replace')
+
 if all_records:
     try:
         df = pd.DataFrame(all_records)
         
+        # DataFrame szöveges oszlopainak tisztítása a surrogate karakterektől
+        for col in df.select_dtypes(include=['object']).columns:
+            df[col] = df[col].apply(clean_surrogates)
+
         # A 'birosag' oszlop feltöltése, ha hiányzik (fontos a konzisztenciához)
         df['birosag'] = df['birosag'].fillna('ISMERETLEN')
 

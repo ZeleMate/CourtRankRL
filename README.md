@@ -125,20 +125,6 @@ Specializált, felhőben futtatható pipeline magyar bírósági határozatok fe
 ### 3. Szabály-alapú Reward Modelling
 Innovatív objektív értékelési rendszer, amely szakértői annotáció helyett szabály-alapú kritériumokat használ (pontosság, relevancia, NDCG).
 
-## 🔧 Hibaelhárítás
-
-### Qwen3 Modell Kompatibilitási Hiba
-
-Ha az alábbi hibát kapod:
-```
-ValueError: The checkpoint you are trying to load has model type `qwen3` but Transformers does not recognize this architecture.
-```
-Győződjön meg róla, hogy a legfrissebb függőségek vannak telepítve az `environment.yml` fájl alapján. Szükség esetén frissítse a `transformers` csomagot:
-```bash
-conda activate courtrankrl
-pip install --upgrade transformers>=4.44.0
-```
-
 ---
 
 **Készítette**: Zelenyiánszki Máté
