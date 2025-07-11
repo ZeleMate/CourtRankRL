@@ -38,8 +38,13 @@ models/
 *.swp
 *.swo
 
-# Raw data directory
-data/
+# Caching and temporary data
+data_cache/
+temp_data/
+*.pyc
+__pycache__/
+.DS_Store
+
 
 # Ignore processed data folder
 processed_data/
