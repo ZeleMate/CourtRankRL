@@ -2,7 +2,6 @@
 # JSON metaadatok feldolgozásáért. A szkript először letölti a nyers adatokat
 # egy ideiglenes helyi könyvtárba, ott feldolgozza őket, majd az eredményül
 # kapott egységes Parquet fájlt feltölti az Azure Blob Storage-ba.
-# Ez a megközelítés csökkenti a felhővel való folyamatos interakciót.
 import pandas as pd
 import json
 import re
@@ -89,7 +88,7 @@ def clean_surrogates(text):
     """Eltávolítja az érvénytelen surrogate párokat a stringből."""
     if not isinstance(text, str):
         return text
-    return text.encode('utf-8', 'surrogateescape').decode('utf-8', 'replace')
+    return re.sub(r'[\ud800-\udfff]', '', text)
 
 # Támogatott szövegfájl kiterjesztések
 SUPPORTED_EXTENSIONS = tuple(ext.lower() for ext in config.SUPPORTED_TEXT_EXTENSIONS)
@@ -111,6 +110,7 @@ def main():
     logging.info(f"Ideiglenes kimeneti könyvtár létrehozva: {output_processing_dir}")
 
     total_records = 0
+    success = False
     
     try:
         # 1. ===== ADATOK LETÖLTÉSE AZURE BLOB-BÓL LOKÁLIS GYORSÍTÓTÁRBA =====
@@ -277,6 +277,7 @@ def main():
             blob_storage.upload_data(data=data.read(), blob_path=blob_path)
         
         logging.info(f"Tisztított Parquet fájl sikeresen feltöltve ide: {blob_path} ({len(df):,} sor)")
+        success = True
 
     except Exception as e:
         logging.error(f"Hiba történt a fő feldolgozási folyamatban: {e}", exc_info=True)
@@ -286,9 +287,13 @@ def main():
         shutil.rmtree(output_processing_dir, ignore_errors=True)
         # A nyers adatok gyorsítótára (`local_raw_data_dir`) megmarad a következő futtatáshoz.
 
-        print(f"\n✅ PREPROCESSING BEFEJEZVE!")
-        print(f"📊 Feldolgozott rekordok: {total_records:,}")
-        print(f"📄 Kimeneti blob: {config.AZURE_CONTAINER_NAME}/{config.BLOB_CLEANED_DOCUMENTS_PARQUET}")
+        if success:
+            print(f"\n✅ PREPROCESSING BEFEJEZVE!")
+            print(f"📊 Feldolgozott rekordok: {total_records:,}")
+            print(f"📄 Kimeneti blob: {config.AZURE_CONTAINER_NAME}/{config.BLOB_CLEANED_DOCUMENTS_PARQUET}")
+        else:
+            print(f"\n❌ PREPROCESSING SIKERTELEN!")
+            print("Kérjük, ellenőrizze a logokat a hiba részleteiért.")
 
 
 if __name__ == "__main__":
