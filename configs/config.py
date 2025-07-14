@@ -44,9 +44,9 @@ BLOB_EXPERT_EVALUATIONS_CSV = f"{BLOB_EVAL_DIR}/expert_evaluations.csv"
 
 
 # --- Modell és darabolás beállítások ---
-MODEL_NAME = "Qwen/Qwen3-Embedding-0.6B"
-EMBEDDING_DIMENSION = 1024
-BATCH_SIZE = 512
+MODEL_NAME = "models/text-embedding-004"
+EMBEDDING_DIMENSION = 768
+BATCH_SIZE = 100
 MAX_SEQUENCE_LENGTH = 8192
 CHUNK_SIZE = 8000
 CHUNK_OVERLAP = 200

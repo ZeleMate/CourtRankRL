@@ -35,7 +35,7 @@ class SearchResult:
     temporal_score: float = 0.0
     components: Dict[str, float] = field(default_factory=dict)
     text: Optional[str] = None
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: Dict[str, any] = field(default_factory=dict)
 
 class HybridSearch:
     """

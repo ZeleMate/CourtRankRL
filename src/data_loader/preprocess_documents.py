@@ -38,13 +38,9 @@ logging.basicConfig(level=config.LOGGING_LEVEL, format=config.LOGGING_FORMAT)
 # Az Azure SDK túlzottan bőbeszédű naplózásának korlátozása WARNING szintre.
 logging.getLogger("azure").setLevel(logging.WARNING)
 
-# Azure Blob Storage kliens inicializálása
-try:
-    blob_storage = AzureBlobStorage(container_name=config.AZURE_CONTAINER_NAME)
-except ValueError as e:
-    logging.error(e)
-    sys.exit(1)
-
+# Támogatott szövegfájl kiterjesztések
+# Már a config fájlban definiálva van, így itt nincs rá szükség.
+# SUPPORTED_EXTENSIONS = tuple(ext.lower() for ext in config.SUPPORTED_TEXT_EXTENSIONS)
 
 def clean_text_for_embedding(text: str) -> str:
     """
@@ -90,210 +86,228 @@ def clean_surrogates(text):
         return text
     return re.sub(r'[\ud800-\udfff]', '', text)
 
-# Támogatott szövegfájl kiterjesztések
-SUPPORTED_EXTENSIONS = tuple(ext.lower() for ext in config.SUPPORTED_TEXT_EXTENSIONS)
 
-def main():
+def sync_raw_data(blob_storage: AzureBlobStorage, local_dir: Path):
     """
-    Letölti a nyers adatokat egy ideiglenes helyi könyvtárba,
-    lokálisan feldolgozza őket, majd a tiszta Parquet fájlt feltölti az Azure-ba.
+    Szinkronizálja a nyers adatokat az Azure Blob Storage-ból egy helyi könyvtárba.
+    Csak a hiányzó fájlokat tölti le.
     """
-    project_root = Path(__file__).resolve().parent.parent.parent
-
-    # Perzisztens helyi gyorsítótár a nyers adatoknak, hogy ne kelljen újra letölteni
-    local_raw_data_dir = project_root / 'data_cache' / 'raw_documents'
-    local_raw_data_dir.mkdir(parents=True, exist_ok=True)
-    logging.info(f"Helyi gyorsítótár használata a nyers adatokhoz: {local_raw_data_dir}")
-
-    # A kimeneti Parquet fájlnak egy valóban ideiglenes könyvtárat használunk, ami törlődni fog
-    output_processing_dir = tempfile.mkdtemp()
-    logging.info(f"Ideiglenes kimeneti könyvtár létrehozva: {output_processing_dir}")
-
-    total_records = 0
-    success = False
+    logging.info(f"Nyers adatok szinkronizálása a helyi gyorsítótárral ide: {local_dir}")
+    local_dir.mkdir(parents=True, exist_ok=True)
     
-    try:
-        # 1. ===== ADATOK LETÖLTÉSE AZURE BLOB-BÓL LOKÁLIS GYORSÍTÓTÁRBA =====
-        logging.info("Nyers adatok szinkronizálása a helyi gyorsítótárral...")
-        all_blob_paths = blob_storage.list_blobs(path_prefix=config.BLOB_RAW_DATA_DIR)
-        
-        if not all_blob_paths:
-            logging.warning(f"Nem találhatóak blobok a '{config.BLOB_RAW_DATA_DIR}/' prefix alatt. A szkript leáll.")
-            return
+    all_blob_paths = blob_storage.list_blobs(path_prefix=config.BLOB_RAW_DATA_DIR)
+    
+    if not all_blob_paths:
+        logging.warning(f"Nem találhatóak blobok a '{config.BLOB_RAW_DATA_DIR}/' prefix alatt.")
+        return
 
-        for blob_path in tqdm(all_blob_paths, desc="Fájlok szinkronizálása a helyi gyorsítótárba"):
-            try:
-                relative_blob_path = Path(*Path(blob_path).parts[1:])
-                local_path = local_raw_data_dir / relative_blob_path
+    for blob_path in tqdm(all_blob_paths, desc="Fájlok szinkronizálása"):
+        try:
+            # A blob elérési útvonalából levágjuk a containert, hogy relatív útvonalat kapjunk
+            relative_blob_path = Path(*Path(blob_path).parts[1:])
+            local_path = local_dir / relative_blob_path
 
-                # Csak akkor töltjük le, ha a fájl még nem létezik lokálisan
-                if local_path.exists():
-                    continue
-
+            if not local_path.exists():
                 local_path.parent.mkdir(parents=True, exist_ok=True)
-                
                 data = blob_storage.download_data(blob_path)
                 with open(local_path, "wb") as f:
                     f.write(data)
-            except Exception as e:
-                logging.error(f"Hiba a(z) {blob_path} blob letöltésekor: {e}", exc_info=True)
+        except Exception as e:
+            logging.error(f"Hiba a(z) {blob_path} blob letöltésekor: {e}", exc_info=True)
+    
+    logging.info("Helyi gyorsítótár szinkronizálva.")
+
+
+def process_local_files(local_dir: Path) -> pd.DataFrame:
+    """
+    Feldolgozza a helyi könyvtárban lévő dokumentumokat és metaadatokat.
+    """
+    logging.info("Helyi fájlok feldolgozásának megkezdése...")
+    
+    document_files = {}
+    json_files = {}
+    supported_extensions = tuple(ext.lower() for ext in config.SUPPORTED_TEXT_EXTENSIONS)
+
+    for file_path in local_dir.rglob('*'):
+        if not file_path.is_file():
+            continue
         
-        logging.info(f"Helyi gyorsítótár szinkronizálva. Összesen {len(all_blob_paths):,} fájl ellenőrizve.")
+        if file_path.suffix.lower() in supported_extensions:
+            base_name = file_path.stem
+            document_files[base_name] = file_path
+        elif file_path.suffix.lower() == '.json':
+            # A JSON fájl nevéből eltávolítjuk a specifikus OBH postfixeket
+            base_name = re.sub(r'\.(RTF|DOCX)_OBH$', '', file_path.stem, flags=re.IGNORECASE)
+            json_files[base_name] = file_path
 
-        # 2. ===== LOKÁLIS FÁJLOK FELDOLGOZÁSA A GYORSÍTÓTÁRBÓL =====
-        logging.info("Helyi fájlok feldolgozásának megkezdése a gyorsítótárból...")
-        
-        document_files = {}
-        json_files = {}
+    all_records = []
+    logging.info(f"Feldolgozásra váró dokumentum párok száma: {len(document_files):,}")
 
-        all_local_files = [p for p in local_raw_data_dir.rglob('*') if p.is_file()]
-
-        for file_path in all_local_files:
-            if file_path.suffix.lower() in SUPPORTED_EXTENSIONS:
-                base_name = file_path.stem
-                document_files[base_name] = file_path
-            elif file_path.suffix.lower() == '.json':
-                base_name = re.sub(r'\.(RTF|DOCX)_OBH$', '', file_path.stem, flags=re.IGNORECASE)
-                json_files[base_name] = file_path
-
-        all_records = []
-        logging.info(f"Feldolgozásra váró dokumentum párok száma: {len(document_files):,}")
-
-        for base_filename, text_filepath in tqdm(document_files.items(), desc="Dokumentumok feldolgozása"):
-            json_filepath = json_files.get(base_filename)
-
-            text_content = ""
-            try:
-                if text_filepath.suffix.lower() == '.rtf':
-                    with open(text_filepath, 'r', encoding='utf-8', errors='ignore') as f:
-                        rtf_content = f.read()
-                    text_content = rtf_to_text(rtf_content, errors="ignore")
-                elif text_filepath.suffix.lower() == '.docx':
-                    doc = Document(text_filepath)
-                    text_content = ' \\n'.join(para.text for para in doc.paragraphs if para.text.strip())
-            except Exception as e:
-                logging.warning(f"Nem sikerült kinyerni a szöveget a fájlból ({text_filepath}): {e}")
-                continue
-            
-            cleaned_text_content = clean_text_for_embedding(text_content)
-
-            if len(cleaned_text_content) < config.CLEANING_MIN_TEXT_LENGTH:
-                logging.debug(f"Dokumentum átugorva, mert a tisztított szöveg túl rövid: {text_filepath.name}")
-                continue
-
-            extracted_metadata = {}
-            all_related_ugyszam = []
-            all_related_birosag = []
-
-            if json_filepath:
-                try:
-                    with open(json_filepath, 'r', encoding='utf-8', errors='ignore') as f:
-                        metadata_dict = json.load(f)
-                    
-                    if 'List' in metadata_dict and isinstance(metadata_dict['List'], list) and len(metadata_dict['List']) > 0:
-                        extracted_metadata = metadata_dict['List'][0]
-                        if 'KapcsolodoHatarozatok' in extracted_metadata and isinstance(extracted_metadata['KapcsolodoHatarozatok'], list):
-                            for related_case in extracted_metadata['KapcsolodoHatarozatok']:
-                                if isinstance(related_case, dict):
-                                    all_related_ugyszam.append(related_case.get('KapcsolodoUgyszam'))
-                                    all_related_birosag.append(related_case.get('KapcsolodoBirosag'))
-                                else:
-                                    logging.warning(f"A KapcsolodoHatarozatok lista egyik eleme nem szótár a {json_filepath} fájlban.")
-                                    all_related_ugyszam.append(None)
-                                    all_related_birosag.append(None)
-                        if 'Jogszabalyhelyek' in extracted_metadata and not isinstance(extracted_metadata['Jogszabalyhelyek'], (str, int, float, bool)):
-                            extracted_metadata['Jogszabalyhelyek'] = json.dumps(extracted_metadata['Jogszabalyhelyek'], ensure_ascii=False)
-                        if 'KapcsolodoHatarozatok' in extracted_metadata and not isinstance(extracted_metadata['KapcsolodoHatarozatok'], (str, int, float, bool)):
-                            extracted_metadata['KapcsolodoHatarozatok'] = json.dumps(extracted_metadata['KapcsolodoHatarozatok'], ensure_ascii=False)
-                except json.JSONDecodeError:
-                    logging.warning(f"Nem sikerült dekódolni a JSON fájlt: {json_filepath}")
-                except Exception as e:
-                    logging.warning(f"Hiba a JSON fájl feldolgozása közben ({json_filepath}): {e}")
-
-            birosag_from_path = None
-            try:
-                relative_path_parts = text_filepath.relative_to(local_raw_data_dir).parts
-                if len(relative_path_parts) > 1:
-                     birosag_from_path = relative_path_parts[0]
-            except Exception as e_path:
-                 logging.warning(f"Váratlan hiba a bíróság nevének útvonalból történő kinyerése közben ({text_filepath}): {e_path}")
-
-            record = {
-                'text': cleaned_text_content,
-                **extracted_metadata,
-                'AllKapcsolodoUgyszam': json.dumps(all_related_ugyszam, ensure_ascii=False) if all_related_ugyszam else None,
-                'AllKapcsolodoBirosag': json.dumps(all_related_birosag, ensure_ascii=False) if all_related_birosag else None,
-            }
-            record['doc_id'] = extracted_metadata.get('Azonosito', base_filename)
-            record['birosag'] = extracted_metadata.get('MeghozoBirosag', birosag_from_path)
-            
-            record.pop('Szoveg', None)
-            record.pop('RezumeSzovegKornyezet', None)
-            record.pop('DownloadLink', None)
-            record.pop('metadata', None)
-
+    for base_filename, text_filepath in tqdm(document_files.items(), desc="Dokumentumok feldolgozása"):
+        record = process_single_document(base_filename, text_filepath, json_files)
+        if record:
             all_records.append(record)
+
+    if not all_records:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(all_records)
+    for col in df.select_dtypes(include=['object']).columns:
+        df[col] = df[col].apply(clean_surrogates)
+
+    df['birosag'] = df['birosag'].fillna('ISMERETLEN')
+    
+    # Oszlopok sorrendjének fixálása a konzisztencia érdekében
+    standard_columns = [
+        'doc_id', 'birosag', 'text', 'UgySzam', 'Ugyiratszam', 'MeghozoSzerv', 
+        'MeghozoDatum', 'HatarozatKategoria', 'HatarozatJellege', 'Targyszavak', 'Jogszabalyhelyek',
+        'AllKapcsolodoUgyszam', 'AllKapcsolodoBirosag'
+    ]
+    
+    # Csak a létező oszlopokat tartjuk meg a standard listából
+    final_columns = [col for col in standard_columns if col in df.columns]
+    # Hozzáadjuk azokat az oszlopokat, amik a df-ben vannak, de a standard listában nem
+    final_columns.extend([col for col in df.columns if col not in final_columns])
+    
+    return df[final_columns]
+
+
+def process_single_document(base_filename: str, text_filepath: Path, json_files: dict) -> dict | None:
+    """Egyetlen dokumentum és a hozzá tartozó JSON feldolgozása."""
+    json_filepath = json_files.get(base_filename)
+    
+    text_content = extract_text_from_file(text_filepath)
+    if not text_content:
+        return None
+
+    cleaned_text = clean_text_for_embedding(text_content)
+    if len(cleaned_text) < config.CLEANING_MIN_TEXT_LENGTH:
+        logging.debug(f"Dokumentum átugorva (túl rövid): {text_filepath.name}")
+        return None
+
+    metadata, related_cases = extract_metadata_from_json(json_filepath)
+    
+    # Bíróság nevének kinyerése a path-ból, ha máshogy nem elérhető
+    birosag_from_path = None
+    try:
+        # feltételezzük, hogy a local_dir a 'raw_documents'
+        relative_path_parts = text_filepath.relative_to(text_filepath.parent.parent).parts
+        if len(relative_path_parts) > 1:
+            birosag_from_path = relative_path_parts[0]
+    except Exception:
+        pass # Nem baj, ha ez nem sikerül, ez csak egy fallback
+
+    record = {
+        'doc_id': metadata.get('Azonosito', base_filename),
+        'birosag': metadata.get('MeghozoBirosag', birosag_from_path),
+        'text': cleaned_text,
+        **metadata,
+        **related_cases
+    }
+
+    # Felesleges vagy duplikált mezők eltávolítása
+    for key in ['Szoveg', 'RezumeSzovegKornyezet', 'DownloadLink', 'metadata', 'KapcsolodoHatarozatok']:
+        record.pop(key, None)
         
-        total_records = len(all_records)
+    return record
 
-        # 3. ===== EGYESÍTETT, TISZTÍTOTT PARQUET LÉTREHOZÁSA ÉS FELTÖLTÉSE =====
-        if not all_records:
-            logging.warning("Nincs feldolgozható rekord, a Parquet fájl létrehozása és feltöltése átugorva.")
-            return
 
-        logging.info("Feldolgozás befejezve, egységes DataFrame létrehozása és feltöltése...")
-        
-        df = pd.DataFrame(all_records)
-        for col in df.select_dtypes(include=['object']).columns:
-            df[col] = df[col].apply(clean_surrogates)
-
-        df['birosag'] = df['birosag'].fillna('ISMERETLEN')
-
-        expected_cols = [
-            'doc_id', 'text', 'birosag', 'JogTerulet', 'Azonosito', 'MeghozoBirosag',
-            'EgyediAzonosito', 'HatarozatEve', 'AllKapcsolodoUgyszam', 'AllKapcsolodoBirosag',
-            'KapcsolodoHatarozatok', 'Jogszabalyhelyek'
-        ]
-        
-        final_cols = [col for col in expected_cols if col in df.columns]
-        other_cols = [col for col in df.columns if col not in final_cols]
-        df = df[final_cols + other_cols]
-
-        local_parquet_path = Path(output_processing_dir) / "cleaned_documents.parquet"
-        df.to_parquet(
-            path=local_parquet_path,
-            engine='pyarrow',
-            compression='snappy',
-            index=False,
-        )
-        
-        logging.info(f"Tisztított Parquet fájl sikeresen feltöltve ide: {local_parquet_path}")
-
-        # 4. ===== PARQUET FÁJL FELTÖLTÉSE AZURE BLOB-BA =====
-        logging.info(f"Parquet fájl feltöltése a(z) '{config.AZURE_CONTAINER_NAME}' konténerbe...")
-        blob_path = config.BLOB_CLEANED_DOCUMENTS_PARQUET
-        
-        with open(local_parquet_path, "rb") as data:
-            blob_storage.upload_data(data=data.read(), blob_path=blob_path)
-        
-        logging.info(f"Tisztított Parquet fájl sikeresen feltöltve ide: {blob_path} ({len(df):,} sor)")
-        success = True
-
+def extract_text_from_file(filepath: Path) -> str | None:
+    """Szöveg kinyerése RTF vagy DOCX fájlból."""
+    try:
+        if filepath.suffix.lower() == '.rtf':
+            with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+                return rtf_to_text(f.read(), errors="ignore")
+        elif filepath.suffix.lower() == '.docx':
+            doc = Document(filepath)
+            return ' \n'.join(para.text for para in doc.paragraphs if para.text.strip())
     except Exception as e:
-        logging.error(f"Hiba történt a fő feldolgozási folyamatban: {e}", exc_info=True)
-    finally:
-        # 5. ===== IDEIGLENES KIMENETI KÖNYVTÁR TÖRLÉSE =====
-        logging.info(f"Átmeneti kimeneti könyvtár törlése: {output_processing_dir}")
-        shutil.rmtree(output_processing_dir, ignore_errors=True)
-        # A nyers adatok gyorsítótára (`local_raw_data_dir`) megmarad a következő futtatáshoz.
+        logging.warning(f"Hiba a szöveg kinyerésekor ({filepath.name}): {e}")
+        return None
 
-        if success:
-            print(f"\n✅ PREPROCESSING BEFEJEZVE!")
-            print(f"📊 Feldolgozott rekordok: {total_records:,}")
-            print(f"📄 Kimeneti blob: {config.AZURE_CONTAINER_NAME}/{config.BLOB_CLEANED_DOCUMENTS_PARQUET}")
-        else:
-            print(f"\n❌ PREPROCESSING SIKERTELEN!")
-            print("Kérjük, ellenőrizze a logokat a hiba részleteiért.")
+
+def extract_metadata_from_json(filepath: Path | None) -> tuple[dict, dict]:
+    """Metaadatok kinyerése a JSON fájlból."""
+    if not filepath or not filepath.exists():
+        return {}, {}
+
+    try:
+        with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+            metadata_list = json.load(f).get('List', [])
+        
+        if not metadata_list:
+            return {}, {}
+            
+        metadata = metadata_list[0]
+        related_ugyszam = []
+        related_birosag = []
+
+        # Kapcsolódó ügyek feldolgozása
+        if 'KapcsolodoHatarozatok' in metadata and isinstance(metadata['KapcsolodoHatarozatok'], list):
+            for case in metadata['KapcsolodoHatarozatok']:
+                if isinstance(case, dict):
+                    related_ugyszam.append(case.get('KapcsolodoUgyszam'))
+                    related_birosag.append(case.get('KapcsolodoBirosag'))
+
+        # A komplex listákat/dict-eket JSON stringgé alakítjuk a Parquet-kompatibilitásért
+        if 'Jogszabalyhelyek' in metadata and not isinstance(metadata['Jogszabalyhelyek'], (str, int, float, bool, type(None))):
+            metadata['Jogszabalyhelyek'] = json.dumps(metadata['Jogszabalyhelyek'], ensure_ascii=False)
+
+        related_cases_data = {
+            'AllKapcsolodoUgyszam': json.dumps(related_ugyszam, ensure_ascii=False) if related_ugyszam else None,
+            'AllKapcsolodoBirosag': json.dumps(related_birosag, ensure_ascii=False) if related_birosag else None
+        }
+
+        return metadata, related_cases_data
+
+    except (json.JSONDecodeError, IndexError) as e:
+        logging.warning(f"Hiba a JSON metaadatok feldolgozásakor ({filepath.name}): {e}")
+        return {}, {}
+
+
+def upload_processed_data(blob_storage: AzureBlobStorage, df: pd.DataFrame, blob_path: str):
+    """Feltölti a feldolgozott DataFrame-et Parquet formátumban az Azure Blob Storage-ba."""
+    if df.empty:
+        logging.warning("A DataFrame üres, a feltöltés átugorva.")
+        return
+
+    logging.info(f"Feldolgozott adatok feltöltése ide: {blob_path}...")
+    with io.BytesIO() as buffer:
+        df.to_parquet(buffer, index=False, engine='pyarrow')
+        buffer.seek(0)
+        blob_storage.upload_data(buffer.getvalue(), blob_path)
+    logging.info("A feltöltés sikeresen befejeződött.")
+
+
+def main():
+    """
+    A fő vezérlő függvény, amely letölti, feldolgozza és feltölti a dokumentumokat.
+    """
+    try:
+        blob_storage = AzureBlobStorage(container_name=config.AZURE_CONTAINER_NAME)
+    except ValueError as e:
+        logging.error(e)
+        sys.exit(1)
+
+    project_root = Path(__file__).resolve().parent.parent.parent
+    local_raw_data_dir = project_root / 'data_cache' / 'raw_documents'
+
+    # 1. Adatok letöltése (vagy szinkronizálása)
+    sync_raw_data(blob_storage, local_raw_data_dir)
+
+    # 2. Helyi fájlok feldolgozása
+    processed_df = process_local_files(local_raw_data_dir)
+
+    # 3. Eredmény feltöltése
+    if not processed_df.empty:
+        logging.info(f"Sikeresen feldolgozva {len(processed_df):,} dokumentum.")
+        upload_processed_data(
+            blob_storage,
+            processed_df,
+            config.BLOB_CLEANED_DOCUMENTS_PARQUET
+        )
+    else:
+        logging.warning("Nem lett egyetlen dokumentum sem feldolgozva.")
 
 
 if __name__ == "__main__":
