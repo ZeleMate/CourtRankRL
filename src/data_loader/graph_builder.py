@@ -28,6 +28,9 @@ except ImportError as e:
     print(f"HIBA: Modul importálása sikertelen: {e}")
     sys.exit(1)
 
+# Az Azure SDK naplózási szintjének beállítása, hogy ne legyen túl beszédes
+logging.getLogger("azure.core.pipeline.policies.http_logging_policy").setLevel(logging.WARNING)
+
 # --- Segédfüggvények ---
 
 def parse_list_string(data_string, separator=';'):
