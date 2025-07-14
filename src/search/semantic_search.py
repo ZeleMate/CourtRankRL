@@ -58,7 +58,7 @@ class HybridSearch:
             self.logger.error(f"Kritikus hiba a kereső inicializálása közben: {e}", exc_info=True)
             raise
 
-        self.logger.info("✅ Hibrid kereső motor sikeresen inicializálva.")
+        self.logger.info("Hibrid kereső motor sikeresen inicializálva.")
     
     def _load_all_data(self):
         """Minden szükséges adat (index, gráf, metaadatok) betöltése a Blob Storage-ból."""
@@ -172,7 +172,7 @@ if __name__ == '__main__':
     print("Keresőmotor inicializálása... (ez eltarthat egy ideig)")
     searcher = HybridSearch()
     
-    print("\n✅ Keresőmotor készen áll.")
+    print("\nKeresőmotor készen áll.")
     print("Teszt lekérdezés: 'kártérítés'")
     
     try:

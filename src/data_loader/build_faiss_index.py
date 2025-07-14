@@ -33,6 +33,9 @@ except ImportError as e:
 # Loggolás beállítása
 logging.basicConfig(level=config.LOGGING_LEVEL, format=config.LOGGING_FORMAT)
 
+# Az Azure SDK naplózási szintjének beállítása, hogy ne legyen túl beszédes
+logging.getLogger("azure.core.pipeline.policies.http_logging_policy").setLevel(logging.WARNING)
+
 def create_faiss_index(vectors: np.ndarray, vector_count: int) -> Any:
     """
     Létrehoz egy FAISS indexet a megadott vektorokból.
@@ -104,7 +107,7 @@ def test_search(index: Any, vectors: np.ndarray, id_mapping: Dict[int, Any], k: 
 
 def main():
     """ Fő függvény a FAISS index létrehozásához Azure Blob Storage integrációval. """
-    logging.info("🚀 FAISS INDEX ÉPÍTÉSE AZURE BLOB STORAGE ALAPJÁN")
+    logging.info("FAISS INDEX ÉPÍTÉSE AZURE BLOB STORAGE ALAPJÁN")
     
     # Azure Blob Storage kliens inicializálása
     try:
@@ -119,7 +122,7 @@ def main():
     try:
         data = blob_storage.download_data(input_blob_path)
         df = pd.read_parquet(io.BytesIO(data))
-        logging.info(f"✅ Sikeresen letöltve és beolvasva {len(df):,} dokumentum.")
+        logging.info(f"Sikeresen letöltve és beolvasva {len(df):,} dokumentum.")
     except Exception as e:
         logging.error(f"Hiba az embeddingek letöltése vagy feldolgozása közben: {e}", exc_info=True)
         sys.exit(1)
@@ -177,19 +180,19 @@ def main():
         index_buffer = io.BytesIO()
         faiss.write_index(index, faiss.PyCallbackIOWriter(index_buffer.write))
         blob_storage.upload_data(index_buffer.getvalue(), config.BLOB_FAISS_INDEX)
-        logging.info("✅ FAISS index sikeresen feltöltve.")
+        logging.info("FAISS index sikeresen feltöltve.")
 
         # ID-leképezés mentése JSON-ként és feltöltése
         logging.info(f"ID-leképezés feltöltése ide: {config.BLOB_FAISS_DOC_ID_MAP}")
         map_buffer = io.BytesIO(json.dumps(id_mapping, ensure_ascii=False).encode('utf-8'))
         blob_storage.upload_data(map_buffer.getvalue(), config.BLOB_FAISS_DOC_ID_MAP)
-        logging.info("✅ ID-leképezés sikeresen feltöltve.")
+        logging.info("ID-leképezés sikeresen feltöltve.")
 
     except Exception as e:
         logging.error(f"Váratlan hiba történt az index építése során: {e}", exc_info=True)
         sys.exit(1)
 
-    logging.info("\n🎉 FAISS INDEX ÉPÍTÉS BEFEJEZVE!")
+    logging.info("\nFAISS INDEX ÉPÍTÉS BEFEJEZVE!")
 
 if __name__ == '__main__':
     main()

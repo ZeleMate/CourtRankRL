@@ -36,10 +36,10 @@ def load_expert_evaluations_from_azure(blob_storage: AzureBlobStorage) -> pd.Dat
     try:
         data = blob_storage.download_data(config.BLOB_EXPERT_EVALUATIONS_CSV)
         df = pd.read_csv(io.BytesIO(data))
-        logging.info(f"✅ Sikeresen betöltve {len(df)} értékelés.")
+        logging.info(f"Sikeresen betöltve {len(df)} értékelés.")
         return df
     except Exception as e:
-        logging.error(f"Hiba a szakértői értékelések letöltésekor: {e}", exc_info=True)
+        logging.error(f"Hiba az értékelő adatok betöltésekor: {e}", exc_info=True)
         return pd.DataFrame()
 
 def get_relevance_scores(ranked_doc_ids: List[str], eval_df: pd.DataFrame, query: str) -> List[float]:
@@ -49,7 +49,7 @@ def get_relevance_scores(ranked_doc_ids: List[str], eval_df: pd.DataFrame, query
 
 def main():
     """Main training loop for the RL agent."""
-    logging.info("🚀 RL ÜGYNÖK TANÍTÁSÁNAK INDÍTÁSA")
+    logging.info("RL ÜGYNÖK TANÍTÁSÁNAK INDÍTÁSA")
 
     # 1. Erőforrások inicializálása
     try:
@@ -121,7 +121,7 @@ def main():
 
     # Végső modell mentése
     agent.save()
-    logging.info("🎉 Tanítás befejezve. A végső modell mentve.")
+    logging.info("Tanítás befejezve. A végső modell mentve.")
 
 if __name__ == "__main__":
     main()
