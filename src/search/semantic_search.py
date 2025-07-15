@@ -37,6 +37,9 @@ class SearchResult:
     text: Optional[str] = None
     metadata: Dict[str, any] = field(default_factory=dict)
 
+# Az Azure SDK naplózási szintjének beállítása, hogy ne legyen túl beszédes
+logging.getLogger("azure.core.pipeline.policies.http_logging_policy").setLevel(logging.WARNING)
+
 class HybridSearch:
     """
     Hibrid keresési motor, amely szemantikus és gráf-alapú keresést kombinál.
@@ -67,7 +70,8 @@ class HybridSearch:
         # FAISS index
         self.logger.info(f"FAISS index letöltése: {config.BLOB_FAISS_INDEX}")
         index_data = self.blob_storage.download_data(config.BLOB_FAISS_INDEX)
-        self.faiss_index = faiss.read_index(faiss.PyCallbackIOReader(index_data))
+        # A PyCallbackIOReader a read metódust várja, nem a byte-okat
+        self.faiss_index = faiss.read_index(faiss.PyCallbackIOReader(io.BytesIO(index_data).read))
         
         # FAISS ID -> doc_id leképezés
         self.logger.info(f"ID leképezés letöltése: {config.BLOB_FAISS_DOC_ID_MAP}")
@@ -84,6 +88,17 @@ class HybridSearch:
         self.logger.info(f"Dokumentum metaadatok letöltése: {config.BLOB_CLEANED_DOCUMENTS_PARQUET}")
         docs_data = self.blob_storage.download_data(config.BLOB_CLEANED_DOCUMENTS_PARQUET)
         df_docs = pd.read_parquet(io.BytesIO(docs_data))
+        
+        # Ellenőrizzük és kezeljük a duplikált 'doc_id'-kat, ami a .to_dict('index') hibáját okozza
+        if df_docs['doc_id'].duplicated().any():
+            num_duplicates = df_docs['doc_id'].duplicated().sum()
+            self.logger.warning(
+                f"Figyelem: {num_duplicates} duplikált 'doc_id' található a metaadatokban. "
+                "Ezek problémát okoznak a szótárrá alakításkor. "
+                "Csak az első egyedi előfordulásokat tartjuk meg."
+            )
+            df_docs = df_docs.drop_duplicates(subset=['doc_id'], keep='first')
+
         self.doc_metadata = df_docs.set_index('doc_id').to_dict('index')
 
         self.logger.info("✅ Minden adat sikeresen betöltve.")

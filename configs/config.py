@@ -44,8 +44,8 @@ BLOB_EXPERT_EVALUATIONS_CSV = f"{BLOB_EVAL_DIR}/expert_evaluations.csv"
 
 
 # --- Modell és darabolás beállítások ---
-MODEL_NAME = "models/text-embedding-004"
-EMBEDDING_DIMENSION = 768
+MODEL_NAME = "gemini-embedding-001"
+EMBEDDING_DIMENSION = 3072
 BATCH_SIZE = 100
 MAX_SEQUENCE_LENGTH = 8192
 CHUNK_SIZE = 8000
