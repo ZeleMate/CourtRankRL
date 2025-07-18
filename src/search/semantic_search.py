@@ -7,7 +7,6 @@ import logging
 import networkx as nx
 from dataclasses import dataclass, field
 from collections import defaultdict
-from sklearn.preprocessing import MinMaxScaler
 import math
 import io
 import pickle
@@ -107,10 +106,17 @@ class HybridSearch:
         """Gráf metrikák előszámítása a gyorsabb keresés érdekében."""
         self.logger.info("Gráf metrikák előszámítása...")
         self.pagerank = nx.pagerank(self.graph)
-        # Normalizálás, hogy a pontszámok 0 és 1 között legyenek
-        self.scaler = MinMaxScaler()
-        pr_values = np.array(list(self.pagerank.values())).reshape(-1, 1)
-        self.normalized_pagerank = dict(zip(self.pagerank.keys(), self.scaler.fit_transform(pr_values).flatten()))
+        
+        # Normalizálás, hogy a pontszámok 0 és 1 között legyenek, robusztus módon.
+        pr_values = np.array(list(self.pagerank.values()))
+        max_pr = np.max(pr_values) if len(pr_values) > 0 else 0.0
+
+        if max_pr > 0:
+            normalized_values = pr_values / max_pr
+        else:
+            normalized_values = pr_values # Már eleve 0-k
+
+        self.normalized_pagerank = dict(zip(self.pagerank.keys(), normalized_values))
         self.logger.info("✅ Metrikák előszámítva.")
 
     def search(self, query: str, top_k: int = 10, alpha: float = 0.6) -> List[SearchResult]:
