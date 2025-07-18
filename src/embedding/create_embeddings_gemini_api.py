@@ -29,7 +29,6 @@ if str(project_root) not in sys.path:
 # Konfiguráció és segédprogramok importálása
 try:
     from configs import config
-    from src.utils.azure_blob_storage import AzureBlobStorage
 except ImportError as e:
     print(f"HIBA: Modul importálása sikertelen: {e}")
     sys.exit(1)
@@ -40,7 +39,6 @@ except ImportError as e:
 
 # --- Naplózás beállítása ---
 logging.basicConfig(level=config.LOGGING_LEVEL, format=config.LOGGING_FORMAT)
-logging.getLogger("azure").setLevel(logging.WARNING)
 logging.getLogger("google").setLevel(logging.WARNING)
 
 # --- API újrapróbálkozási beállítások ---
@@ -97,18 +95,6 @@ def get_gemini_embeddings_with_retry(texts: list[str], model_name: str, task_typ
     nan_embedding = [np.nan] * config.EMBEDDING_DIMENSION
     return [nan_embedding] * len(texts)
 
-def download_input_data(blob_storage: AzureBlobStorage) -> pd.DataFrame:
-    """Letölti a bemeneti Parquet fájlt az Azure Blob Storage-ból."""
-    logging.info(f"Bemeneti adatok letöltése innen: {config.BLOB_CLEANED_DOCUMENTS_PARQUET}")
-    try:
-        data = blob_storage.download_data(config.BLOB_CLEANED_DOCUMENTS_PARQUET)
-        df = pd.read_parquet(io.BytesIO(data))
-        logging.info(f"Sikeresen letöltve {len(df):,} sor.")
-        return df
-    except Exception as e:
-        logging.error(f"Hiba a bemeneti fájl letöltése vagy olvasása közben: {e}", exc_info=True)
-        return pd.DataFrame()
-
 def create_text_chunks(df: pd.DataFrame) -> list[dict]:
     """DataFrame-ből létrehozza a szövegdarabok (chunks) listáját."""
     if df.empty:
@@ -135,104 +121,73 @@ def create_text_chunks(df: pd.DataFrame) -> list[dict]:
     logging.info(f"Összesen {len(all_chunk_records):,} darab (chunk) készült.")
     return all_chunk_records
 
-
-def generate_and_upload_embeddings(blob_storage: AzureBlobStorage, records: list[dict]):
-    """
-    Legenerálja az embeddingeket a szövegdarabokhoz és kötegelten feltölti 
-    az eredményt egy Parquet fájlba az Azure Blob Storage-ba.
-    """
-    if not records:
-        logging.warning("Nincsenek feldolgozandó rekordok, az embedding generálás átugorva.")
-        return
-
-    output_blob_path = config.BLOB_DOCUMENTS_WITH_EMBEDDINGS_PARQUET
-    all_processed_dfs = []
-    
-    try:
-        logging.info(f"Embeddingek generálása és mentése ide: {output_blob_path}")
-
-        record_generator = (records[i:i + WRITE_BATCH_SIZE] for i in range(0, len(records), WRITE_BATCH_SIZE))
-
-        for batch_records in tqdm(record_generator, total=(len(records) - 1) // WRITE_BATCH_SIZE + 1, desc="Fő feldolgozási ciklus"):
-            if not batch_records:
-                continue
-
-            batch_df = pd.DataFrame(batch_records)
-            text_chunks_list = batch_df['text_chunk'].tolist()
-            
-            all_embeddings = []
-            for j in tqdm(range(0, len(text_chunks_list), config.BATCH_SIZE), desc="Gemini API hívások", leave=False):
-                api_batch_texts = text_chunks_list[j:j + config.BATCH_SIZE]
-                api_batch_embeddings = get_gemini_embeddings_with_retry(
-                    texts=api_batch_texts,
-                    model_name=config.MODEL_NAME,
-                    task_type="RETRIEVAL_DOCUMENT"
-                )
-                all_embeddings.extend(api_batch_embeddings)
-            
-            batch_df['embedding'] = all_embeddings
-            
-            failed_mask = batch_df['embedding'].apply(lambda x: not isinstance(x, list) or (isinstance(x, list) and np.isnan(x).any()))
-            if failed_mask.any():
-                logging.warning(f"Egy darabon belül {failed_mask.sum()} embedding generálása sikertelen volt, ezek kihagyásra kerülnek.")
-                batch_df = batch_df[~failed_mask]
-
-            batch_df = batch_df.drop(columns=['text', 'text_chunk'], errors='ignore')
-
-            if not batch_df.empty:
-                all_processed_dfs.append(batch_df)
-
-        if not all_processed_dfs:
-            logging.warning("Nem sikerült egyetlen érvényes embeddinget sem létrehozni.")
-            return
-
-        final_df = pd.concat(all_processed_dfs, ignore_index=True)
-        
-        with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as tmp:
-            final_df.to_parquet(tmp.name, engine='pyarrow', compression='snappy')
-            tmp_path = tmp.name
-        
-        logging.info(f"Ideiglenes fájl létrehozva: {tmp_path}. Feltöltés...")
-        blob_storage.upload_file(local_path=tmp_path, blob_path=output_blob_path)
-        
-        os.remove(tmp_path)
-        logging.info(f"Sikeresen feltöltve {len(final_df):,} embedding.")
-
-    except Exception as e:
-        logging.error(f"Hiba az embedding generálás vagy feltöltés során: {e}", exc_info=True)
-    finally:
-        gc.collect()
-
 def main():
-    """Fő vezérlő függvény: letölti, darabolja, generálja az embeddingeket és feltölti az eredményt."""
-    start_time = time.time()
-    logging.info("Embedding generálási folyamat elindítva...")
-
-    load_dotenv()
-    if not os.getenv("GOOGLE_API_KEY"):
-        logging.error("A GOOGLE_API_KEY környezeti változó nincs beállítva. A folyamat leáll.")
+    """Fő függvény, amely betölti az adatokat, legenerálja az embeddingeket és elmenti az eredményt."""
+    logging.info("===== EMBEDDING GENERÁLÁS INDÍTÁSA (GEMINI API) =====")
+    
+    # Bemeneti adatok betöltése
+    input_path = config.CLEANED_DOCUMENTS_PARQUET
+    if not input_path.exists():
+        logging.error(f"A bemeneti fájl nem található: {input_path}")
         sys.exit(1)
-    genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
-
+        
+    logging.info(f"Adatok betöltése innen: {input_path}")
+    df = pd.read_parquet(input_path)
+    df = df.head(100) # TESZTELÉSHEZ
+    
+    # API kliens és modell inicializálása
     try:
-        blob_storage = AzureBlobStorage(container_name=config.AZURE_CONTAINER_NAME)
-    except ValueError as e:
-        logging.error(e)
+        genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+        model = genai.GenerativeModel(config.MODEL_NAME)
+    except Exception as e:
+        logging.error(f"Hiba a Gemini API kliens inicializálásakor: {e}")
         sys.exit(1)
+        
+    # Feldolgozás és mentés
+    output_path = config.DOCUMENTS_WITH_EMBEDDINGS_PARQUET
+    logging.info(f"Embeddingek mentése ide: {output_path}")
 
-    df_cleaned = download_input_data(blob_storage)
-    if df_cleaned.empty:
-        logging.error("A bemeneti adatok üresek vagy nem sikerült letölteni. A folyamat leáll.")
-        return
+    with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as tmp_file:
+        temp_output_path = tmp_file.name
 
-    chunk_records = create_text_chunks(df_cleaned)
-    del df_cleaned
-    gc.collect()
+    writer = None
+    total_chunks = 0
+    try:
+        # A DF-ből chunkok készítése
+        chunk_records = create_text_chunks(df)
+        
+        # Embedding generálás és írás kötegenként
+        for i in tqdm(range(0, len(chunk_records), config.BATCH_SIZE), desc="Embedding kötegek feldolgozása"):
+            batch_records = chunk_records[i:i+config.BATCH_SIZE]
+            batch_df = pd.DataFrame(batch_records)
 
-    generate_and_upload_embeddings(blob_storage, chunk_records)
+            texts_to_embed = batch_df['text_chunk'].tolist()
+            embeddings = get_gemini_embeddings_with_retry(texts_to_embed, config.MODEL_NAME, "RETRIEVAL_DOCUMENT")
 
-    total_time = time.time() - start_time
-    logging.info(f"--- Embedding generálás befejezve {total_time:.2f} másodperc alatt ---")
+            batch_df['embedding'] = embeddings
+            
+            # Hibás sorok eltávolítása
+            batch_df.dropna(subset=['embedding'], inplace=True)
+
+            # Eredmény hozzáfűzése a Parquet fájlhoz
+            table = pa.Table.from_pandas(batch_df)
+            if writer is None:
+                writer = pq.ParquetWriter(temp_output_path, table.schema)
+            writer.write_table(table)
+            total_chunks += 1
+    finally:
+        if writer:
+            writer.close()
+
+    if total_chunks > 0:
+        os.replace(temp_output_path, output_path)
+        logging.info(f"Sikeresen kiírva {total_chunks} köteg a(z) '{output_path}' fájlba.")
+    else:
+        if os.path.exists(temp_output_path):
+            os.remove(temp_output_path)
+        logging.warning("Nem történt adatfeldolgozás, a kimeneti fájl nem jött létre.")
+    
+    logging.info("===== EMBEDDING GENERÁLÁS BEFEJEZVE =====")
 
 
 if __name__ == '__main__':

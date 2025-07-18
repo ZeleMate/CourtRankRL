@@ -27,16 +27,12 @@ if str(project_root) not in sys.path:
 # Konfiguráció és segédprogramok importálása
 try:
     from configs import config
-    from src.utils.azure_blob_storage import AzureBlobStorage
 except ImportError as e:
     print(f"HIBA: Modul importálása sikertelen: {e}")
     sys.exit(1)
 
 # Loggolás beállítása
 logging.basicConfig(level=config.LOGGING_LEVEL, format=config.LOGGING_FORMAT)
-
-# Az Azure SDK túlzottan bőbeszédű naplózásának korlátozása WARNING szintre.
-logging.getLogger("azure").setLevel(logging.WARNING)
 
 # Támogatott szövegfájl kiterjesztések
 # Már a config fájlban definiálva van, így itt nincs rá szükség.
@@ -76,7 +72,7 @@ def clean_text_for_embedding(text: str) -> str:
     text = re.sub(r'[{}]', '', text)
     
     # Többszörös szóközök, tabulátorok, új sorok cseréje egyetlen szóközre
-    text = re.sub(r'\s+', ' ', text).strip()
+    text = re.sub(r'\\s+', ' ', text).strip()
     
     return text
 
@@ -84,38 +80,7 @@ def clean_surrogates(text):
     """Eltávolítja az érvénytelen surrogate párokat a stringből."""
     if not isinstance(text, str):
         return text
-    return re.sub(r'[\ud800-\udfff]', '', text)
-
-
-def sync_raw_data(blob_storage: AzureBlobStorage, local_dir: Path):
-    """
-    Szinkronizálja a nyers adatokat az Azure Blob Storage-ból egy helyi könyvtárba.
-    Csak a hiányzó fájlokat tölti le.
-    """
-    logging.info(f"Nyers adatok szinkronizálása a helyi gyorsítótárral ide: {local_dir}")
-    local_dir.mkdir(parents=True, exist_ok=True)
-    
-    all_blob_paths = blob_storage.list_blobs(path_prefix=config.BLOB_RAW_DATA_DIR)
-    
-    if not all_blob_paths:
-        logging.warning(f"Nem találhatóak blobok a '{config.BLOB_RAW_DATA_DIR}/' prefix alatt.")
-        return
-
-    for blob_path in tqdm(all_blob_paths, desc="Fájlok szinkronizálása"):
-        try:
-            # A blob elérési útvonalából levágjuk a containert, hogy relatív útvonalat kapjunk
-            relative_blob_path = Path(*Path(blob_path).parts[1:])
-            local_path = local_dir / relative_blob_path
-
-            if not local_path.exists():
-                local_path.parent.mkdir(parents=True, exist_ok=True)
-                data = blob_storage.download_data(blob_path)
-                with open(local_path, "wb") as f:
-                    f.write(data)
-        except Exception as e:
-            logging.error(f"Hiba a(z) {blob_path} blob letöltésekor: {e}", exc_info=True)
-    
-    logging.info("Helyi gyorsítótár szinkronizálva.")
+    return re.sub(r'[\\ud800-\\udfff]', '', text)
 
 
 def process_local_files(local_dir: Path) -> pd.DataFrame:
@@ -265,50 +230,36 @@ def extract_metadata_from_json(filepath: Path | None) -> tuple[dict, dict]:
         return {}, {}
 
 
-def upload_processed_data(blob_storage: AzureBlobStorage, df: pd.DataFrame, blob_path: str):
-    """Feltölti a feldolgozott DataFrame-et Parquet formátumban az Azure Blob Storage-ba."""
-    if df.empty:
-        logging.warning("A DataFrame üres, a feltöltés átugorva.")
-        return
-
-    logging.info(f"Feldolgozott adatok feltöltése ide: {blob_path}...")
-    with io.BytesIO() as buffer:
-        df.to_parquet(buffer, index=False, engine='pyarrow')
-        buffer.seek(0)
-        blob_storage.upload_data(buffer.getvalue(), blob_path)
-    logging.info("A feltöltés sikeresen befejeződött.")
-
-
 def main():
     """
-    A fő vezérlő függvény, amely letölti, feldolgozza és feltölti a dokumentumokat.
+    Fő függvény, amely beolvassa a nyers adatokat a lokális `raw` könyvtárból,
+    feldolgozza őket, és az eredményt elmenti a `processed` könyvtárba.
     """
-    try:
-        blob_storage = AzureBlobStorage(container_name=config.AZURE_CONTAINER_NAME)
-    except ValueError as e:
-        logging.error(e)
+    logging.info("===== DOKUMENTUM ELŐFELDOLGOZÁS INDÍTÁSA =====")
+    
+    raw_dir = config.RAW_DATA_DIR
+    output_parquet_path = config.CLEANED_DOCUMENTS_PARQUET
+    
+    if not raw_dir.exists() or not any(raw_dir.iterdir()):
+        logging.error(f"A bemeneti '{raw_dir}' könyvtár nem létezik vagy üres.")
+        logging.info("Kérlek, helyezd a feldolgozandó JSON és a hozzá tartozó RTF/DOCX fájlokat ebbe a könyvtárba.")
         sys.exit(1)
 
-    project_root = Path(__file__).resolve().parent.parent.parent
-    local_raw_data_dir = project_root / 'data_cache' / 'raw_documents'
+    processed_df = process_local_files(raw_dir)
 
-    # 1. Adatok letöltése (vagy szinkronizálása)
-    sync_raw_data(blob_storage, local_raw_data_dir)
-
-    # 2. Helyi fájlok feldolgozása
-    processed_df = process_local_files(local_raw_data_dir)
-
-    # 3. Eredmény feltöltése
     if not processed_df.empty:
         logging.info(f"Sikeresen feldolgozva {len(processed_df):,} dokumentum.")
-        upload_processed_data(
-            blob_storage,
-            processed_df,
-            config.BLOB_CLEANED_DOCUMENTS_PARQUET
-        )
+        try:
+            logging.info(f"Feldolgozott adatok mentése ide: {output_parquet_path}")
+            processed_df.to_parquet(output_parquet_path, index=False, engine='pyarrow')
+            logging.info("Sikeres mentés.")
+        except Exception as e:
+            logging.error(f"Hiba a Parquet fájl mentésekor: {e}", exc_info=True)
     else:
         logging.warning("Nem lett egyetlen dokumentum sem feldolgozva.")
 
+    logging.info("===== DOKUMENTUM ELŐFELDOLGOZÁS BEFEJEZVE =====")
 
-if __name__ == "__main__":
+
+if __name__ == '__main__':
     main()

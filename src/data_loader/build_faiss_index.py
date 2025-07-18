@@ -25,7 +25,6 @@ if str(project_root) not in sys.path:
 # Konfiguráció és segédprogramok importálása
 try:
     from configs import config
-    from src.utils.azure_blob_storage import AzureBlobStorage
 except ImportError as e:
     print(f"HIBA: Modul importálása sikertelen: {e}")
     sys.exit(1)
@@ -105,94 +104,63 @@ def test_search(index: Any, vectors: np.ndarray, id_mapping: Dict[int, Any], k: 
     else:
         logging.info("A tesztkeresés nem adott vissza találatot.")
 
-def main():
-    """ Fő függvény a FAISS index létrehozásához Azure Blob Storage integrációval. """
-    logging.info("FAISS INDEX ÉPÍTÉSE AZURE BLOB STORAGE ALAPJÁN")
+def load_data_from_local(filepath: Path) -> pd.DataFrame:
+    """Adatok betöltése lokális Parquet fájlból."""
+    if not filepath.exists():
+        logging.error(f"A bemeneti fájl nem található: {filepath}")
+        sys.exit(1)
+    logging.info(f"Adatok betöltése innen: {filepath}")
+    return pd.read_parquet(filepath)
+
+def build_index(embeddings: np.ndarray) -> faiss.Index:
+    """FAISS index építése a megadott embeddingekből."""
+    vector_count = embeddings.shape[0]
+    logging.info(f"FAISS index építése {vector_count} vektorra...")
+    return create_faiss_index(embeddings, vector_count)
+
+def save_artifacts(index: faiss.Index, doc_id_map: Dict[int, Any], index_path: Path, map_path: Path):
+    """FAISS index és ID leképezés mentése lokális fájlokba."""
+    logging.info(f"FAISS index mentése ide: {index_path}")
+    faiss.write_index(index, str(index_path))
     
-    # Azure Blob Storage kliens inicializálása
-    try:
-        blob_storage = AzureBlobStorage(container_name=config.AZURE_CONTAINER_NAME)
-    except ValueError as e:
-        logging.error(e)
+    logging.info(f"Dokumentum ID leképezés mentése ide: {map_path}")
+    with open(map_path, 'w') as f:
+        json.dump(doc_id_map, f)
+
+def main():
+    """Fő függvény a FAISS index építéséhez lokális adatokból."""
+    logging.info("===== FAISS INDEX ÉPÍTÉSE LOKÁLISAN =====")
+    start_time = time.time()
+
+    # 1. Adatok betöltése lokálisan
+    df = load_data_from_local(config.DOCUMENTS_WITH_EMBEDDINGS_PARQUET)
+    
+    if 'embedding' not in df.columns or df['embedding'].isnull().any():
+        logging.error("A 'embedding' oszlop hiányzik vagy hibás adatokat tartalmaz.")
         sys.exit(1)
 
-    # ===== 1. ADATOK LETÖLTÉSE AZURE-BÓL =====
-    input_blob_path = config.BLOB_DOCUMENTS_WITH_EMBEDDINGS_PARQUET
-    logging.info(f"Embeddingek letöltése: {input_blob_path}")
-    try:
-        data = blob_storage.download_data(input_blob_path)
-        df = pd.read_parquet(io.BytesIO(data))
-        logging.info(f"Sikeresen letöltve és beolvasva {len(df):,} dokumentum.")
-    except Exception as e:
-        logging.error(f"Hiba az embeddingek letöltése vagy feldolgozása közben: {e}", exc_info=True)
-        sys.exit(1)
+    # 2. Embeddingek és ID-k kinyerése
+    logging.info("Embeddingek és ID-k előkészítése...")
+    embeddings = np.vstack(df['embedding'].to_numpy()).astype('float32')
+    doc_ids = df['doc_id'].tolist()
+    
+    # Memóriatakarékosság
+    del df
+    gc.collect()
 
-    try:
-        # ===== 2. ADATOK VALIDÁLÁSA ÉS TISZTÍTÁSA =====
-        logging.info(f"Adatok validálása...")
-        
-        if 'embedding' not in df.columns or 'doc_id' not in df.columns:
-            logging.error("A DataFrame nem tartalmazza a szükséges 'embedding' vagy 'doc_id' oszlopot.")
-            sys.exit(1)
+    # 3. FAISS index építése
+    logging.info(f"FAISS index építése {embeddings.shape[0]} vektorra...")
+    index = build_index(embeddings)
 
-        missing_count = df['embedding'].isna().sum()
-        if missing_count:
-            logging.warning(f"{missing_count} sorban nincs embedding, ezek kiszűrése...")
-            df = df.dropna(subset=['embedding']).reset_index(drop=True)
-        
-        if df.empty:
-            logging.error("Nincsenek érvényes embeddingek az index építéséhez.")
-            sys.exit(1)
-        
-        logging.info(f"Validálás után maradt {len(df):,} dokumentum.")
+    # 4. ID leképezés létrehozása
+    doc_id_map = {i: doc_ids[i] for i in range(len(doc_ids))}
 
-        # ===== 3. VEKTOROK ÉS ID-LEKÉPEZÉS LÉTREHOZÁSA =====
-        logging.info("Vektorok és ID-leképezés előkészítése...")
-        
-        # A vektorokat egyetlen NumPy tömbbe fűzzük
-        vectors = np.vstack(df['embedding'].values).astype('float32')
-        
-        # Ellenőrizzük a dimenziót
-        if vectors.shape[1] != config.EMBEDDING_DIMENSION:
-            logging.error(
-                f"Embedding dimenzió eltérés: "
-                f"Várt: {config.EMBEDDING_DIMENSION}, Kapott: {vectors.shape[1]}"
-            )
-            sys.exit(1)
-        
-        # ID-leképezés létrehozása: FAISS index -> eredeti doc_id
-        # A FAISS egyszerű, 0-tól n-1-ig terjedő indexeket használ.
-        id_mapping = {i: doc_id for i, doc_id in enumerate(df['doc_id'])}
-        vector_count = len(df)
-        
-        del df; gc.collect()
+    # 5. Artefaktumok mentése lokálisan
+    save_artifacts(index, doc_id_map, config.FAISS_INDEX_PATH, config.FAISS_DOC_ID_MAP_PATH)
 
-        # ===== 4. FAISS INDEX LÉTREHOZÁSA =====
-        index = create_faiss_index(vectors, vector_count)
-
-        # ===== 5. TESZTELÉS =====
-        test_search(index, vectors, id_mapping)
-        del vectors; gc.collect()
-
-        # ===== 6. INDEX ÉS LEKÉPEZÉS FELTÖLTÉSE AZURE-BA =====
-        # FAISS index mentése memóriába és feltöltése
-        logging.info(f"FAISS index feltöltése ide: {config.BLOB_FAISS_INDEX}")
-        index_buffer = io.BytesIO()
-        faiss.write_index(index, faiss.PyCallbackIOWriter(index_buffer.write))
-        blob_storage.upload_data(index_buffer.getvalue(), config.BLOB_FAISS_INDEX)
-        logging.info("FAISS index sikeresen feltöltve.")
-
-        # ID-leképezés mentése JSON-ként és feltöltése
-        logging.info(f"ID-leképezés feltöltése ide: {config.BLOB_FAISS_DOC_ID_MAP}")
-        map_buffer = io.BytesIO(json.dumps(id_mapping, ensure_ascii=False).encode('utf-8'))
-        blob_storage.upload_data(map_buffer.getvalue(), config.BLOB_FAISS_DOC_ID_MAP)
-        logging.info("ID-leképezés sikeresen feltöltve.")
-
-    except Exception as e:
-        logging.error(f"Váratlan hiba történt az index építése során: {e}", exc_info=True)
-        sys.exit(1)
-
-    logging.info("\nFAISS INDEX ÉPÍTÉS BEFEJEZVE!")
+    end_time = time.time()
+    logging.info(f"FAISS index sikeresen létrehozva és elmentve. Időtartam: {end_time - start_time:.2f} másodperc.")
+    logging.info("========================================")
 
 if __name__ == '__main__':
     main()

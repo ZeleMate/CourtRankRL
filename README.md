@@ -2,37 +2,37 @@
 
 ## Projekt Áttekintés
 
-Ez a projekt egy komplex, end-to-end felhőalapú megoldást mutat be magyarországi bírósági határozatok hatékony szabadszöveges keresésére. A rendszer egy többlépcsős architektúrát implementál, amely Azure Blob Storage-ra épül, és a teljes adatfeldolgozási, modellezési és keresési folyamatot a felhőben kezeli. A megoldás egy szemantikus keresőt kombinál egy megerősítéses tanulással (RL) finomhangolt intelligens ágenssel, amely a találati listát optimalizálja a releváns dokumentumok jobb rangsorolása érdekében.
+Ez a projekt egy komplex, end-to-end megoldást mutat be magyarországi bírósági határozatok hatékony szabadszöveges keresésére. A rendszer egy többlépcsős architektúrát implementál, amely a lokális fájlrendszerre épül, és a teljes adatfeldolgozási, modellezési és keresési folyamatot helyben kezeli. A megoldás egy szemantikus keresőt kombinál egy megerősítéses tanulással (RL) finomhangolt intelligens ágenssel, amely a találati listát optimalizálja a releváns dokumentumok jobb rangsorolása érdekében.
 
 ## Kutatási Motiváció
 
-A modern jogi információkeresés egyik legnagyobb kihívása a szabadszöveges lekérdezések hatékony feldolgozása nagy volumenű dokumentumkorpuszokon. Ez a projekt egy innovatív, felhő-natív megközelítést alkalmaz, amely ötvözi a modern nyelvmodell-alapú szemantikus keresést a megerősítéses tanulás adaptív optimalizálási képességeivel, egy skálázható és robusztus Azure-infrastruktúrán.
+A modern jogi információkeresés egyik legnagyobb kihívása a szabadszöveges lekérdezések hatékony feldolgozása nagy volumenű dokumentumkorpuszokon. Ez a projekt egy innovatív megközelítést alkalmaz, amely ötvözi a modern nyelvmodell-alapú szemantikus keresést a megerősítéses tanulás adaptív optimalizálási képességeivel.
 
 ## Rendszer Architektúra
 
-A rendszer az adatkezelést teljes mértékben az Azure Blob Storage-ban centralizálja. Minden adat, a nyers dokumentumoktól kezdve a feldolgozott adatokon, embeddingeken, FAISS indexen, gráfon át egészen a betanított modellekig és kiértékelésekig, itt tárolódik. Az egyes komponensek a központi `AzureBlobStorage` segédprogramon keresztül kommunikálnak a tárolóval.
+A rendszer az adatkezelést a projekt gyökérkönyvtárában található `data/` könyvtárban centralizálja. Minden adat, a nyers dokumentumoktól kezdve a feldolgozott adatokon, embeddingeken, FAISS indexen, gráfon át egészen a betanított modellekig és kiértékelésekig, itt tárolódik.
 
 A következő diagram ábrázolja a rendszer főbb logikai egységeit és az adatfolyamot:
 
 ```mermaid
 graph TD
-    subgraph Adatfeldolgozás
+    subgraph "Lokális Adatfeldolgozás (src/)"
         P1["Preprocess<br>(preprocess_documents.py)"]
-        P2["Embeddings<br>(create_embeddings_cloud.py)"]
+        P2["Embeddings<br>(create_embeddings_gemini_api.py)"]
         P3["FAISS Index<br>(build_faiss_index.py)"]
         P4["Gráf Építés<br>(graph_builder.py)"]
     end
 
-    subgraph "Azure Blob Storage"
-        A["raw / (Nyers adatok)"]
-        B["processed / (Feldolgozott adatok)"]
-        C["embeddings / (Vektorok)"]
-        D["index / (FAISS)"]
-        E["graph / (Hivatkozási gráf)"]
-        F["models / (RL Ágens)"]
+    subgraph "Lokális Adattárolás (data/)"
+        A["raw/ (Nyers adatok)"]
+        B["processed/ (Feldolgozott adatok)"]
+        C["embeddings/ (Vektorok)"]
+        D["index/ (FAISS)"]
+        E["graph/ (Hivatkozási gráf)"]
+        F["models/ (RL Ágens)"]
     end
 
-    subgraph "Keresés és Tanulás"
+    subgraph "Keresés és Tanulás (src/)"
         S1["HybridSearch<br>(semantic_search.py)"]
         S2["RankingEnv<br>(environment.py)"]
         S3["RLAgent<br>(agent.py)"]
@@ -58,20 +58,19 @@ graph TD
 
 ### Főbb Rendszerkomponensek
 
-- **Adattárolás**: Az összes adatartefaktum (Parquet, JSON, bináris modellek) központilag, egyetlen Azure Blob Storage konténerben van tárolva, logikai "könyvtár" struktúrában.
-- **Adatfeldolgozó Szkriptek**: A `src/data_loader` és `src/embedding` modulokban található szkriptek felelősek a nyers adatok letöltéséért, feldolgozásáért és a végeredmények visszatöltéséért az Azure-ba. A folyamat teljesen automatizált és memóriában történik, ahol lehetséges.
-- **Hibrid Keresési Motor**: A `HybridSearch` osztály (`src/search/semantic_search.py`) betölti a FAISS indexet, a gráfot és a metaadatokat az Azure-ból, és egy egységes felületet biztosít a komplex keresési lekérdezésekhez.
-- **RL Optimalizálás**: A `RankingEnv` környezet és az `RLAgent` ágens önállóan kezelik a szükséges modellek és adatok betöltését az Azure-ból, valamint a tanítás során keletkezett modellek mentését.
+- **Adattárolás**: Az összes adatartefaktum (Parquet, JSON, bináris modellek) központilag, a projekt `data/` könyvtárában van tárolva, logikai alkönyvtár struktúrában.
+- **Adatfeldolgozó Szkriptek**: A `src/data_loader` és `src/embedding` modulokban található szkriptek felelősek a nyers adatok beolvasásáért, feldolgozásáért és az eredmények elmentéséért.
+- **Hibrid Keresési Motor**: A `HybridSearch` osztály (`src/search/semantic_search.py`) betölti a FAISS indexet, a gráfot és a metaadatokat a `data/` könyvtárból.
+- **RL Optimalizálás**: A `RankingEnv` környezet és az `RLAgent` ágens önállóan kezelik a szükséges modellek és adatok betöltését a lokális `data/` könyvtárból, valamint a tanítás során keletkezett modellek mentését.
 
 ## Technológiai Stack
 
-- **Cloud Platform**: Microsoft Azure (Blob Storage)
-- **Embedding Model**: `Qwen/Qwen3-Embedding-0.6B` (HuggingFace Transformers)
+- **Cloud API**: Google Gemini API (Embedding generáláshoz)
+- **Embedding Model**: `models/text-embedding-004`
 - **Vector Search**: `faiss-cpu` (Facebook AI Similarity Search)
 - **RL Framework**: PyTorch + Gymnasium
 - **Data Processing**: Pandas, NumPy, NetworkX, PyArrow
 - **Infrastructure**: Python 3.9+, Conda
-- **Cloud SDK**: `azure-storage-blob`
 
 ## Telepítés és Beállítás
 
@@ -87,34 +86,36 @@ A projekt futtatásához szükséges környezet beállítása `conda` segítség
     conda activate courtrankrl
     ```
 
-3.  **Állítsa be az Azure kapcsolati stringet:**
-    Hozzon létre egy `.env` fájlt a projekt gyökérkönyvtárában a következő tartalommal, és cserélje ki a placeholder értéket a saját Azure Storage fiókjának kapcsolati stringjére:
+3.  **Állítsa be a Gemini API kulcsot:**
+    Hozzon létre egy `.env` fájlt a projekt gyökérkönyvtárában a következő tartalommal, és cserélje ki a placeholder értéket a saját Google Gemini API kulcsára:
 
     ```ini
     # .env
-    AZURE_CONNECTION_STRING="<AZ_AZURE_BLOB_STORAGE_KAPCSOLATI_STRING>"
+    GEMINI_API_KEY="<AZ_ÖN_GEMINI_API_KULCSA>"
     ```
     A rendszer automatikusan betölti ezt a változót a `python-dotenv` csomag segítségével.
 
 ## A Projekt Futtatása
 
-A teljes adatfeldolgozási és modellépítési lánc a `src/` könyvtárban található szkriptek futtatásával indítható. A szkriptek a `configs/config.py`-ban definiált Azure blob útvonalakat használják a bemeneti és kimeneti adatok kezelésére.
+A teljes adatfeldolgozási és modellépítési lánc a `src/` könyvtárban található szkriptek futtatásával indítható. A szkriptek a `configs/config.py`-ban definiált lokális útvonalakat használják a bemeneti és kimeneti adatok kezelésére.
 
 **Példa a folyamatra:**
-1.  Töltse fel a nyers adatokat az Azure Blob Storage `raw/` "könyvtárába".
+1.  Helyezze a nyers adatokat (JSON metaadatok és a hozzájuk tartozó RTF/DOCX fájlok) a `data/raw/` könyvtárba.
 2.  Futtassa a `src/data_loader/preprocess_documents.py` szkriptet.
-3.  Futtassa a `src/embedding/create_embeddings_cloud.py` szkriptet (GPU-s környezetben).
+3.  Futtassa a `src/embedding/create_embeddings_gemini_api.py` szkriptet.
 4.  Futtassa a `src/data_loader/build_faiss_index.py` szkriptet.
 5.  Futtassa a `src/data_loader/graph_builder.py` szkriptet.
-6.  Indítsa el a modell tanítását a `src/reinforcement_learning/train_agent.py` szkripttel.
+6.  Helyezze a szakértői kiértékeléseket tartalmazó CSV fájlt a `data/evaluations/` könyvtárba.
+7.  Indítsa el a modell tanítását a `src/reinforcement_learning/train_agent.py` szkripttel.
+8.  Értékelje ki a modellt a `src/reinforcement_learning/evaluate_agent.py` szkripttel.
 
 ## Kutatási Hozzájárulások
 
-### 1. Felhő-Natív Hibrid Keresési Architektúra
-A projekt egy olyan skálázható, felhőalapú architektúrát valósít meg, amely kombinálja a szemantikus embeddingeket, a gráf alapú kapcsolati hálózatokat és a megerősítéses tanulást, teljes mértékben az Azure ökoszisztémára támaszkodva.
+### 1. Hibrid Keresési Architektúra
+A projekt egy olyan skálázható architektúrát valósít meg, amely kombinálja a szemantikus embeddingeket, a gráf alapú kapcsolati hálózatokat és a megerősítéses tanulást.
 
 ### 2. Magyar Jogi Domain Adaptáció
-Specializált, felhőben futtatható pipeline magyar bírósági határozatok feldolgozására, amely figyelembe veszi a jogi terminológia és a magyar nyelv sajátosságait.
+Specializált pipeline magyar bírósági határozatok feldolgozására, amely figyelembe veszi a jogi terminológia és a magyar nyelv sajátosságait.
 
 ### 3. Szabály-alapú Reward Modelling
 Innovatív objektív értékelési rendszer, amely szakértői annotáció helyett szabály-alapú kritériumokat használ (pontosság, relevancia, NDCG).
@@ -124,5 +125,5 @@ Innovatív objektív értékelési rendszer, amely szakértői annotáció helye
 **Készítette**: Zelenyiánszki Máté
 **Intézmény**: Pannon Egyetem 
 **Kutatási terület**: Természetes Nyelvfeldolgozás, Információvisszakeresés, Megerősítéses Tanulás  
-**Implementáció**: Python, PyTorch, HuggingFace Transformers, Azure Blob Storage
+**Implementáció**: Python, PyTorch, HuggingFace Transformers, FAISS
 **Licenc**: Kutatási célú felhasználás

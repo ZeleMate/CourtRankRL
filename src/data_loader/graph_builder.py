@@ -23,7 +23,6 @@ if str(project_root) not in sys.path:
 # Konfigurációs beállítások és segédprogramok importálása
 try:
     from configs import config
-    from src.utils.azure_blob_storage import AzureBlobStorage
 except ImportError as e:
     print(f"HIBA: Modul importálása sikertelen: {e}")
     sys.exit(1)
@@ -166,38 +165,33 @@ def determine_stop_jogszabalyok(df: pd.DataFrame, column_name='Jogszabalyhelyek'
 def main():
     """
     Fő függvény a gráf építéséhez, amely beolvassa a dokumentumokat,
-    kiszámítja a hasonlóságokat, és feltölti a gráfot az Azure-ba.
+    kiszámítja a hasonlóságokat, és elmenti a gráfot lokálisan.
     """
-    logging.info("GRÁFÉPÍTŐ INDÍTÁSA AZURE BLOB STORAGE ALAPJÁN")
-    
-    blob_storage = AzureBlobStorage(container_name=config.AZURE_CONTAINER_NAME)
-    
-    input_blob_path = config.BLOB_DOCUMENTS_WITH_EMBEDDINGS_PARQUET
+    logging.info("GRÁFÉPÍTŐ INDÍTÁSA LOKÁLIS ADATOK ALAPJÁN")
+
+    input_path = config.DOCUMENTS_WITH_EMBEDDINGS_PARQUET
     try:
-        data = blob_storage.download_data(input_blob_path)
-        df = pd.read_parquet(io.BytesIO(data))
-        logging.info(f"Adatok betöltve: {len(df):,} dokumentum.")
+        df = pd.read_parquet(input_path)
+        logging.info(f"Adatok betöltve: {len(df):,} dokumentum innen: {input_path}")
     except Exception as e:
-        logging.error(f"Hiba az adatok letöltésekor: {e}", exc_info=True)
+        logging.error(f"Hiba az adatok betöltésekor: {e}", exc_info=True)
         sys.exit(1)
-    
+
     # 2. Stop szavak meghatározása
     stop_jogszabalyok = determine_stop_jogszabalyok(df)
 
     # 3. Gráf építése
     G = build_graph(df, stop_jogszabalyok)
 
-    # 4. Gráf mentése és feltöltése
-    output_blob_path = config.BLOB_GRAPH
-    logging.info(f"Gráf feltöltése: {output_blob_path}")
+    # 4. Gráf mentése
+    output_path = config.GRAPH_PATH
+    logging.info(f"Gráf mentése ide: {output_path}")
     try:
-        buffer = io.BytesIO()
-        pickle.dump(G, buffer)
-        buffer.seek(0)
-        blob_storage.upload_data(buffer.getvalue(), output_blob_path)
-        logging.info("Gráf sikeresen feltöltve.")
+        with open(output_path, 'wb') as f:
+            pickle.dump(G, f)
+        logging.info("Gráf sikeresen elmentve.")
     except Exception as e:
-        logging.error(f"Hiba a gráf építése során: {e}", exc_info=True)
+        logging.error(f"Hiba a gráf mentése során: {e}", exc_info=True)
 
     logging.info("\nGRÁFÉPÍTÉS BEFEJEZVE!")
 

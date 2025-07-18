@@ -5,42 +5,41 @@ import logging
 
 # --- Alapvető beállítások ---
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DATA_DIR = PROJECT_ROOT / "data"
 
-# --- Azure Blob Storage beállítások ---
-AZURE_CONNECTION_STRING = os.getenv("AZURE_CONNECTION_STRING")
-if not AZURE_CONNECTION_STRING:
-    print("Figyelem: Az AZURE_CONNECTION_STRING környezeti változó nincs beállítva.")
+# --- Adatkönyvtárak létrehozása ---
+RAW_DATA_DIR = DATA_DIR / "raw"
+PROCESSED_DATA_DIR = DATA_DIR / "processed"
+EMBEDDING_DIR = DATA_DIR / "embeddings"
+INDEX_DIR = DATA_DIR / "index"
+GRAPH_DIR = DATA_DIR / "graph"
+MODELS_DIR = DATA_DIR / "models"
+EVAL_DIR = DATA_DIR / "evaluations"
 
-AZURE_CONTAINER_NAME = "courtrankrl" 
+for directory in [RAW_DATA_DIR, PROCESSED_DATA_DIR, EMBEDDING_DIR, INDEX_DIR, GRAPH_DIR, MODELS_DIR, EVAL_DIR]:
+    directory.mkdir(parents=True, exist_ok=True)
 
-# --- Blob Storage elérési utak ---
-BLOB_RAW_DATA_DIR = "raw"
-BLOB_PROCESSED_DATA_DIR = "processed"
-BLOB_EMBEDDING_DIR = "embeddings"
-BLOB_INDEX_DIR = "index"
-BLOB_GRAPH_DIR = "graph"
-BLOB_MODELS_DIR = "models"
-BLOB_EVAL_DIR = "evaluations"
 
-BLOB_RL_AGENT_PATH = f"{BLOB_MODELS_DIR}/rl_agent.pth"
+# --- Lokális fájl elérési utak ---
+RL_AGENT_PATH = MODELS_DIR / "rl_agent.pth"
 
 # Feldolgozás előtti és utáni adatok
-BLOB_RAW_DOCUMENTS_CSV = f"{BLOB_RAW_DATA_DIR}/raw_documents.csv"
-BLOB_CLEANED_DATA_FOR_EMBEDDING_CSV = f"{BLOB_PROCESSED_DATA_DIR}/cleaned_data_for_embedding.csv"
-BLOB_CLEANED_DOCUMENTS_PARQUET = f"{BLOB_PROCESSED_DATA_DIR}/cleaned_documents.parquet"
+RAW_DOCUMENTS_CSV = RAW_DATA_DIR / "raw_documents.csv"
+CLEANED_DATA_FOR_EMBEDDING_CSV = PROCESSED_DATA_DIR / "cleaned_data_for_embedding.csv"
+CLEANED_DOCUMENTS_PARQUET = PROCESSED_DATA_DIR / "cleaned_documents.parquet"
 
 # Embeddingek
-BLOB_DOCUMENTS_WITH_EMBEDDINGS_PARQUET = f"{BLOB_EMBEDDING_DIR}/documents_with_embeddings.parquet"
+DOCUMENTS_WITH_EMBEDDINGS_PARQUET = EMBEDDING_DIR / "documents_with_embeddings.parquet"
 
 # FAISS Index és kapcsolódó fájlok
-BLOB_FAISS_INDEX = f"{BLOB_INDEX_DIR}/faiss_index.bin"
-BLOB_FAISS_DOC_ID_MAP = f"{BLOB_INDEX_DIR}/doc_id_map.json"
+FAISS_INDEX_PATH = INDEX_DIR / "faiss_index.bin"
+FAISS_DOC_ID_MAP_PATH = INDEX_DIR / "doc_id_map.json"
 
 # Gráf
-BLOB_GRAPH = f"{BLOB_GRAPH_DIR}/document_graph.gpickle"
+GRAPH_PATH = GRAPH_DIR / "document_graph.gpickle"
 
 # Kiértékelések
-BLOB_EXPERT_EVALUATIONS_CSV = f"{BLOB_EVAL_DIR}/expert_evaluations.csv"
+EXPERT_EVALUATIONS_CSV = EVAL_DIR / "expert_evaluations.csv"
 
 
 # --- Modell és darabolás beállítások ---

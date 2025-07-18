@@ -18,7 +18,6 @@ if str(project_root) not in sys.path:
 from src.reinforcement_learning.agent import RLAgent
 from src.reinforcement_learning.environment import RankingEnv
 from src.reinforcement_learning.reward_models.reward import compute_ndcg
-from src.utils.azure_blob_storage import AzureBlobStorage
 from configs import config
 from tqdm import tqdm
 
@@ -30,14 +29,17 @@ INITIAL_TOP_K = 20 # Ennek meg kell egyeznie a RankingEnv-ben használt értékk
 # Loggolás beállítása
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-def load_expert_evaluations_from_azure(blob_storage: AzureBlobStorage) -> pd.DataFrame:
-    """Loads expert evaluation data from a CSV in Azure Blob Storage."""
-    logging.info(f"Szakértői értékelések letöltése: {config.BLOB_EXPERT_EVALUATIONS_CSV}")
+def load_expert_evaluations() -> pd.DataFrame:
+    """Loads expert evaluation data from a local CSV file."""
+    eval_path = config.EXPERT_EVALUATIONS_CSV
+    logging.info(f"Szakértői értékelések betöltése innen: {eval_path}")
     try:
-        data = blob_storage.download_data(config.BLOB_EXPERT_EVALUATIONS_CSV)
-        df = pd.read_csv(io.BytesIO(data))
+        df = pd.read_csv(eval_path)
         logging.info(f"Sikeresen betöltve {len(df)} értékelés.")
         return df
+    except FileNotFoundError:
+        logging.error(f"Hiba: Az értékelő fájl nem található itt: {eval_path}", exc_info=True)
+        return pd.DataFrame()
     except Exception as e:
         logging.error(f"Hiba az értékelő adatok betöltésekor: {e}", exc_info=True)
         return pd.DataFrame()
@@ -53,7 +55,6 @@ def main():
 
     # 1. Erőforrások inicializálása
     try:
-        blob_storage = AzureBlobStorage(container_name=config.AZURE_CONTAINER_NAME)
         env = RankingEnv(initial_top_k=INITIAL_TOP_K)
         
         agent_input_dim = env.observation_space.shape[0]
@@ -67,7 +68,7 @@ def main():
         sys.exit(1)
 
     # 2. Szakértői értékelések betöltése
-    eval_df = load_expert_evaluations_from_azure(blob_storage)
+    eval_df = load_expert_evaluations()
     if eval_df.empty:
         logging.error("Nincsenek szakértői értékelések, a tanítás leáll.")
         sys.exit(1)

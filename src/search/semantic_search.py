@@ -19,9 +19,7 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 from configs import config
-from src.utils.azure_blob_storage import AzureBlobStorage
-# A modellek importálása mostantól a src.models-ból történik
-from src.models.embedding import get_embedding_model
+from src.embedding.create_embeddings_gemini_api import get_embedding_model
 
 @dataclass
 class SearchResult:
@@ -42,16 +40,15 @@ logging.getLogger("azure.core.pipeline.policies.http_logging_policy").setLevel(l
 class HybridSearch:
     """
     Hibrid keresési motor, amely szemantikus és gráf-alapú keresést kombinál.
-    Az adatokat az Azure Blob Storage-ból tölti be inicializáláskor.
+    Az adatokat a lokális fájlrendszerből tölti be inicializáláskor.
     """
     
     def __init__(self):
-        """Inicializálja a keresőt és betölti az összes szükséges adatot az Azure-ból."""
+        """Inicializálja a keresőt és betölti az összes szükséges adatot a lokális fájlrendszerből."""
         self.logger = logging.getLogger(self.__class__.__name__)
         self.logger.info("Hibrid kereső motor inicializálása...")
 
         try:
-            self.blob_storage = AzureBlobStorage(container_name=config.AZURE_CONTAINER_NAME)
             self._load_all_data()
             self._precompute_metrics()
             # Az embedding modell betöltése a végén, hogy a többi komponens gyorsan betöltődjön
@@ -63,30 +60,26 @@ class HybridSearch:
         self.logger.info("Hibrid kereső motor sikeresen inicializálva.")
     
     def _load_all_data(self):
-        """Minden szükséges adat (index, gráf, metaadatok) betöltése a Blob Storage-ból."""
-        self.logger.info("Adatok betöltése az Azure Blob Storage-ból...")
+        """Minden szükséges adat (index, gráf, metaadatok) betöltése a lokális fájlrendszerből."""
+        self.logger.info("Adatok betöltése a lokális fájlrendszerből...")
         
         # FAISS index
-        self.logger.info(f"FAISS index letöltése: {config.BLOB_FAISS_INDEX}")
-        index_data = self.blob_storage.download_data(config.BLOB_FAISS_INDEX)
-        # A PyCallbackIOReader a read metódust várja, nem a byte-okat
-        self.faiss_index = faiss.read_index(faiss.PyCallbackIOReader(io.BytesIO(index_data).read))
+        self.logger.info(f"FAISS index betöltése: {config.FAISS_INDEX_PATH}")
+        self.faiss_index = faiss.read_index(str(config.FAISS_INDEX_PATH))
         
         # FAISS ID -> doc_id leképezés
-        self.logger.info(f"ID leképezés letöltése: {config.BLOB_FAISS_DOC_ID_MAP}")
-        map_data = self.blob_storage.download_data(config.BLOB_FAISS_DOC_ID_MAP)
-        # A JSON kulcsok stringek, de a FAISS int-eket ad vissza, ezért konvertálunk
-        self.id_map = {int(k): v for k, v in json.loads(map_data).items()}
+        self.logger.info(f"ID leképezés betöltése: {config.FAISS_DOC_ID_MAP_PATH}")
+        with open(config.FAISS_DOC_ID_MAP_PATH, 'r') as f:
+            self.id_map = {int(k): v for k, v in json.load(f).items()}
         
         # Gráf
-        self.logger.info(f"Gráf letöltése: {config.BLOB_GRAPH}")
-        graph_data = self.blob_storage.download_data(config.BLOB_GRAPH)
-        self.graph = pickle.load(io.BytesIO(graph_data))
+        self.logger.info(f"Gráf betöltése: {config.GRAPH_PATH}")
+        with open(config.GRAPH_PATH, 'rb') as f:
+            self.graph = pickle.load(f)
         
         # Dokumentum szövegek és metaadatok
-        self.logger.info(f"Dokumentum metaadatok letöltése: {config.BLOB_CLEANED_DOCUMENTS_PARQUET}")
-        docs_data = self.blob_storage.download_data(config.BLOB_CLEANED_DOCUMENTS_PARQUET)
-        df_docs = pd.read_parquet(io.BytesIO(docs_data))
+        self.logger.info(f"Dokumentum metaadatok betöltése: {config.CLEANED_DOCUMENTS_PARQUET}")
+        df_docs = pd.read_parquet(config.CLEANED_DOCUMENTS_PARQUET)
         
         # Ellenőrizzük és kezeljük a duplikált 'doc_id'-kat, ami a .to_dict('index') hibáját okozza
         if df_docs['doc_id'].duplicated().any():
