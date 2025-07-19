@@ -34,9 +34,6 @@ class SearchResult:
     text: Optional[str] = None
     metadata: Dict[str, any] = field(default_factory=dict)
 
-# Az Azure SDK naplózási szintjének beállítása, hogy ne legyen túl beszédes
-logging.getLogger("azure.core.pipeline.policies.http_logging_policy").setLevel(logging.WARNING)
-
 class HybridSearch:
     """
     Hibrid keresési motor, amely szemantikus és gráf-alapú keresést kombinál.
