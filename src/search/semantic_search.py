@@ -19,7 +19,7 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 from configs import config
-from src.embedding.create_embeddings_gemini_api import get_embedding_model
+from src.embedding.create_embeddings_gemini_api import get_gemini_embeddings_with_retry
 
 @dataclass
 class SearchResult:
@@ -49,7 +49,7 @@ class HybridSearch:
             self._load_all_data()
             self._precompute_metrics()
             # Az embedding modell betöltése a végén, hogy a többi komponens gyorsan betöltődjön
-            self.embedding_model = get_embedding_model()
+            self.embedding_model = get_gemini_embeddings_with_retry()
         except Exception as e:
             self.logger.error(f"Kritikus hiba a kereső inicializálása közben: {e}", exc_info=True)
             raise
