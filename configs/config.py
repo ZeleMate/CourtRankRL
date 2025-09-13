@@ -1,62 +1,71 @@
-# configs/config.py
+# configs/config.py - CourtRankRL Configuration
 import os
 from pathlib import Path
 import logging
 
-# --- Alapvető beállítások ---
+# --- Project Structure ---
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
 
-# --- Adatkönyvtárak létrehozása ---
+# Directories
 RAW_DATA_DIR = DATA_DIR / "raw"
 PROCESSED_DATA_DIR = DATA_DIR / "processed"
-EMBEDDING_DIR = DATA_DIR / "embeddings"
 INDEX_DIR = DATA_DIR / "index"
-GRAPH_DIR = DATA_DIR / "graph"
 MODELS_DIR = DATA_DIR / "models"
-EVAL_DIR = DATA_DIR / "evaluations"
 
-for directory in [RAW_DATA_DIR, PROCESSED_DATA_DIR, EMBEDDING_DIR, INDEX_DIR, GRAPH_DIR, MODELS_DIR, EVAL_DIR]:
+for directory in [RAW_DATA_DIR, PROCESSED_DATA_DIR, INDEX_DIR, MODELS_DIR]:
     directory.mkdir(parents=True, exist_ok=True)
 
+# --- Input Files ---
+# Raw court documents (RTF/DOCX)
+RAW_DOCUMENTS_DIR = RAW_DATA_DIR
 
-# --- Lokális fájl elérési utak ---
-RL_AGENT_PATH = MODELS_DIR / "rl_agent.pth"
+# Development qrels file (JSONL format)
+DEV_QRELS_FILE = DATA_DIR / "dev_qrels.jsonl"
 
-# Feldolgozás előtti és utáni adatok
-RAW_DOCUMENTS_CSV = RAW_DATA_DIR / "raw_documents.csv"
-CLEANED_DATA_FOR_EMBEDDING_CSV = PROCESSED_DATA_DIR / "cleaned_data_for_embedding.csv"
-CLEANED_DOCUMENTS_PARQUET = PROCESSED_DATA_DIR / "cleaned_documents.parquet"
+# --- Output Files ---
+# Processed chunks with metadata (JSONL)
+CHUNKS_JSONL = PROCESSED_DATA_DIR / "chunks.jsonl"
 
-# Embeddingek
-DOCUMENTS_WITH_EMBEDDINGS_PARQUET = EMBEDDING_DIR / "documents_with_embeddings.parquet"
-
-# FAISS Index és kapcsolódó fájlok
+# Indexes
+BM25_INDEX_PATH = INDEX_DIR / "bm25_index.json"
 FAISS_INDEX_PATH = INDEX_DIR / "faiss_index.bin"
-FAISS_DOC_ID_MAP_PATH = INDEX_DIR / "doc_id_map.json"
+CHUNK_ID_MAP_PATH = INDEX_DIR / "chunk_id_map.json"
 
-# Gráf
-GRAPH_PATH = GRAPH_DIR / "document_graph.gpickle"
+# RL Policy
+RL_POLICY_PATH = MODELS_DIR / "rl_policy.pth"
 
-# Kiértékelések
-EXPERT_EVALUATIONS_CSV = EVAL_DIR / "expert_evaluations.csv"
+# Query Results
+BASELINE_RESULTS_DIR = DATA_DIR / "baseline_results"
+RERANKED_RESULTS_DIR = DATA_DIR / "reranked_results"
 
+# --- Model Configuration ---
+# Qwen3-Embedding-0.6B modell (helyi, API-kulcs nélküli)
+MODEL_NAME = "Qwen/Qwen3-Embedding-0.6B"
+# Qwen3 embedding alapértelmezett dimenzió: 1024 (felhasználó által definiálható 32-1024 között)
+EMBEDDING_DIMENSION = 1024
 
-# --- Modell és darabolás beállítások ---
-MODEL_NAME = "models/text-embedding-004"
-EMBEDDING_DIMENSION = 768
-BATCH_SIZE = 100
-MAX_SEQUENCE_LENGTH = 8192
-CHUNK_SIZE = 8000
-CHUNK_OVERLAP = 200
+# --- Retrieval Configuration ---
+TOP_K_BASELINE = 100
+TOP_K_RERANKED = 10
+RRF_K = 60  # Reciprocal Rank Fusion parameter
 
+# --- RL Configuration ---
+RL_LEARNING_RATE = 1e-4
+RL_BATCH_SIZE = 32
+RL_EPOCHS = 10
+RL_HIDDEN_DIM = 64
 
-# --- Szövegtisztítási beállítások ---
-CLEANING_MIN_TEXT_LENGTH = 150 # Minimum karakterhossz, ami alatt a szöveget zajnak tekintjük
+# --- BM25 Configuration ---
+BM25_K1 = 1.5
+BM25_B = 0.75
 
-# --- Loggolási beállítások ---
-LOGGING_LEVEL = logging.INFO
+# --- File Extensions ---
+SUPPORTED_TEXT_EXTENSIONS = ['.rtf', '.docx', '.RTF', '.DOCX']
+
+# --- Text Cleaning Configuration ---
+CLEANING_MIN_TEXT_LENGTH = 150  # Minimum karakterhossz, ami alatt a szöveget zajnak tekintjük
+
+# --- Minimal Logging ---
+LOGGING_LEVEL = logging.WARNING  # No logging as per spec
 LOGGING_FORMAT = '%(asctime)s - %(levelname)s - %(message)s'
-
-# --- Támogatott fájltípusok ---
-SUPPORTED_TEXT_EXTENSIONS = ['.rtf', '.docx', '.txt']
