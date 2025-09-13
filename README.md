@@ -123,7 +123,7 @@ Innovatív objektív értékelési rendszer, amely szakértői annotáció helye
 ---
 
 **Készítette**: Zelenyiánszki Máté
-**Intézmény**: Pannon Egyetem 
-**Kutatási terület**: Természetes Nyelvfeldolgozás, Információvisszakeresés, Megerősítéses Tanulás  
+**Intézmény**: Pannon Egyetem
+**Kutatási terület**: Természetes Nyelvfeldolgozás, Információvisszakeresés, Megerősítéses Tanulás
 **Implementáció**: Python, PyTorch, HuggingFace Transformers, FAISS
 **Licenc**: Kutatási célú felhasználás

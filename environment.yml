@@ -25,4 +25,9 @@ dependencies:
     - beautifulsoup4
     - azure-storage-blob
     - google-generativeai
-    - langchain-text-splitters 
+    - google-genai
+    - docling
+    - docling-core
+    - sentence-transformers
+    - transformers
+    - accelerate 
