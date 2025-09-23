@@ -50,7 +50,7 @@ RERANKED_RESULTS_DIR = DATA_DIR / "reranked_results"
 # Agents.md spec: Qwen3-Embedding-0.6B
 EMBEDDING_MODEL_TYPE = "qwen3"
 
-# Qwen3 konfiguráció - specifikáció szerint
+# Qwen3 konfiguráció - RunPod 5090 GPU optimalizált
 QWEN3_MODEL_NAME = "Qwen/Qwen3-Embedding-0.6B"
 QWEN3_DIMENSION = 1024  # Qwen3-0.6B kimeneti dimenzió
 
@@ -77,13 +77,13 @@ BM25_B = 0.75
 CHUNK_WRITE_BATCH_SIZE = 200
 
 # --- Memory guard (soft limit, bytes) ---
-# Soft limit: ~13 GiB (16 GB rendszerhez)
-MEMORY_SOFT_LIMIT_BYTES = 12 * 1024 * 1024 * 1024
+# RunPod 5090 GPU optimalizált (~20 GiB GPU memory)
+MEMORY_SOFT_LIMIT_BYTES = 20 * 1024 * 1024 * 1024
 
 # --- Embedding Configuration ---
-# GPU memória optimalizálás a 32GB-os kártyákhoz
-EMBEDDING_BATCH_SIZE = 32  # Csökkentett batch méret memória problémák elkerülésére
-EMBEDDING_MAX_LENGTH = 512  # Csökkentett max token hossz
+# RunPod 5090 GPU optimalizált (24GB VRAM)
+EMBEDDING_BATCH_SIZE = 128  # Teljes batch méret a 5090 GPU-hoz
+EMBEDDING_MAX_LENGTH = 1024  # Teljes token hossz
 
 # --- FAISS IVF konfiguráció ---
 # Célszerű klaszterszám: nlist ~ sqrt(N). Határok és tréning mintakövetelmény.
