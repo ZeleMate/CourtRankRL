@@ -17,7 +17,7 @@ for directory in [RAW_DATA_DIR, PROCESSED_DATA_DIR, INDEX_DIR, MODELS_DIR]:
     directory.mkdir(parents=True, exist_ok=True)
 
 # --- Input Files ---
-# Raw court documents (RTF/DOCX)
+# Raw court documents (DOCX)
 RAW_DOCUMENTS_DIR = RAW_DATA_DIR
 
 # Development qrels file (JSONL format)
@@ -26,6 +26,12 @@ DEV_QRELS_FILE = DATA_DIR / "dev_qrels.jsonl"
 # --- Output Files ---
 # Processed chunks with metadata (JSONL)
 CHUNKS_JSONL = PROCESSED_DATA_DIR / "chunks.jsonl"
+
+# Processed documents list (JSONL, egy sor = {"doc_id": ...})
+PROCESSED_DOCS_LIST = PROCESSED_DATA_DIR / "processed_docs.jsonl"
+
+# Preprocess checkpoint (állapot mentése nagy futásokhoz)
+CHECKPOINT_PATH = PROCESSED_DATA_DIR / "preprocess_checkpoint.json"
 
 # Indexes
 BM25_INDEX_PATH = INDEX_DIR / "bm25_index.json"
@@ -40,10 +46,16 @@ BASELINE_RESULTS_DIR = DATA_DIR / "baseline_results"
 RERANKED_RESULTS_DIR = DATA_DIR / "reranked_results"
 
 # --- Model Configuration ---
-# Qwen3-Embedding-0.6B modell (helyi, API-kulcs nélküli)
-MODEL_NAME = "Qwen/Qwen3-Embedding-0.6B"
-# Qwen3 embedding alapértelmezett dimenzió: 1024 (felhasználó által definiálható 32-1024 között)
-EMBEDDING_DIMENSION = 1024
+# Embedding model: Qwen3-Embedding-0.6B (Hugging Face)
+# Agents.md spec: Qwen3-Embedding-0.6B
+EMBEDDING_MODEL_TYPE = "qwen3"
+
+# Qwen3 konfiguráció - specifikáció szerint
+QWEN3_MODEL_NAME = "Qwen/Qwen3-Embedding-0.6B"
+QWEN3_DIMENSION = 1024  # Qwen3-0.6B kimeneti dimenzió
+
+# Aktív embedding dimenzió
+EMBEDDING_DIMENSION = QWEN3_DIMENSION
 
 # --- Retrieval Configuration ---
 TOP_K_BASELINE = 100
@@ -60,8 +72,28 @@ RL_HIDDEN_DIM = 64
 BM25_K1 = 1.5
 BM25_B = 0.75
 
-# --- File Extensions ---
-SUPPORTED_TEXT_EXTENSIONS = ['.rtf', '.docx', '.RTF', '.DOCX']
+# --- Preprocess / IO batching ---
+# Hány sort írjunk ki egyben a JSONL-be, mielőtt ürítjük a memóriapuffert
+CHUNK_WRITE_BATCH_SIZE = 200
+
+# --- Memory guard (soft limit, bytes) ---
+# Soft limit: ~13 GiB (16 GB rendszerhez)
+MEMORY_SOFT_LIMIT_BYTES = 12 * 1024 * 1024 * 1024
+
+# --- Embedding Configuration ---
+# GPU memória optimalizálás a 32GB-os kártyákhoz
+EMBEDDING_BATCH_SIZE = 32  # Csökkentett batch méret memória problémák elkerülésére
+EMBEDDING_MAX_LENGTH = 512  # Csökkentett max token hossz
+
+# --- FAISS IVF konfiguráció ---
+# Célszerű klaszterszám: nlist ~ sqrt(N). Határok és tréning mintakövetelmény.
+FAISS_NLIST_MIN = 64
+FAISS_NLIST_MAX = 2048
+FAISS_TRAIN_POINTS_PER_CENTROID = 39  # FAISS heurisztika (~40 pont/centroid)
+FAISS_TRAIN_MAX_POINTS = 100_000  # tréning minták felső korlátja (RAM kontroll)
+
+# --- File Extensions (DOCX only) ---
+SUPPORTED_TEXT_EXTENSIONS = ['.docx', '.DOCX']
 
 # --- Text Cleaning Configuration ---
 CLEANING_MIN_TEXT_LENGTH = 150  # Minimum karakterhossz, ami alatt a szöveget zajnak tekintjük
