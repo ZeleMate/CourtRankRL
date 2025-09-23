@@ -1,0 +1,47 @@
+[project]
+name = "courtrankrl"
+version = "0.1.0"
+description = "CourtRankRL - Magyar bírósági határozatok retrieval rendszer"
+authors = [{name = "Zelenyiánszki Máté"}]
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "numpy",
+    "pandas",
+    "tqdm",
+    "torch",
+    "faiss-cpu",
+    "pyarrow",
+    "scikit-learn",
+    "networkx",
+    "python-docx",
+    "python-dotenv",
+    "gymnasium",
+    "matplotlib",
+    "seaborn",
+    "beautifulsoup4",
+    "azure-storage-blob",
+    "google-generativeai",
+    "google-genai",
+    "docling",
+    "docling-core",
+    "sentence-transformers",
+    "transformers",
+    "accelerate",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[tool.uv]
+dev-dependencies = [
+    "jupyter",
+    "ipykernel",
+]
+
+[project.scripts]
+courtrankrl = "src.cli:main"
+
