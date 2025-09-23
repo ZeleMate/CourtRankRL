@@ -1,129 +1,141 @@
-# CourtRankRL: Magyar Bírósági Határozatok Szemantikus Keresőrendszere Megerősítéses Tanulással
+# CourtRankRL – Magyar bírósági határozatok hibrid visszakeresése RL‑alapú újrarangsorolással
 
-## Projekt Áttekintés
+## Áttekintés
 
-Ez a projekt egy komplex, end-to-end megoldást mutat be magyarországi bírósági határozatok hatékony szabadszöveges keresésére. A rendszer egy többlépcsős architektúrát implementál, amely a lokális fájlrendszerre épül, és a teljes adatfeldolgozási, modellezési és keresési folyamatot helyben kezeli. A megoldás egy szemantikus keresőt kombinál egy megerősítéses tanulással (RL) finomhangolt intelligens ágenssel, amely a találati listát optimalizálja a releváns dokumentumok jobb rangsorolása érdekében.
+Compute‑light, lokálisan futtatható pipeline magyar bírósági határozatokra. A rendszer Doclinggel feldolgozza a DOCX fájlokat, chunkol, BM25 és FAISS indexet épít, hibrid (sparse+dense) visszakeresést végez RRF fúzióval, és opcionálisan GRPO‑stílusú RL‑lel újrarangsorol. A lekérdezések kimenete kizárólag azonosítókból álló lista (doc_id), magyar nyelvű kísérőszöveg nélkül.
 
-## Kutatási Motiváció
+Fő komponensek (high‑level)
+- Docling feldolgozás és minimál normalizálás.
+- Chunkolás átfedéssel, meta megtartással.
+- BM25 (sparse) index és FAISS (dense) index építés.
+- Hibrid visszakeresés RRF fúzióval (alapértelmezett).
+- RL alapú újrarangsorolás (GRPO) – opcionális, PoC‑barát.
 
-A modern jogi információkeresés egyik legnagyobb kihívása a szabadszöveges lekérdezések hatékony feldolgozása nagy volumenű dokumentumkorpuszokon. Ez a projekt egy innovatív megközelítést alkalmaz, amely ötvözi a modern nyelvmodell-alapú szemantikus keresést a megerősítéses tanulás adaptív optimalizálási képességeivel.
+## Telepítés
 
-## Rendszer Architektúra
+1) UV környezet beállítása
+- `uv sync` (telepíti a függőségeket és virtuális környezetet)
+- `source .venv/bin/activate` (aktiválja a virtuális környezetet, ha szükséges; uv automatikusan kezeli)
 
-A rendszer az adatkezelést a projekt gyökérkönyvtárában található `data/` könyvtárban centralizálja. Minden adat, a nyers dokumentumoktól kezdve a feldolgozott adatokon, embeddingeken, FAISS indexen, gráfon át egészen a betanított modellekig és kiértékelésekig, itt tárolódik.
+2) Környezeti változók (`.env` a projekt gyökerében)
+- `HUGGINGFACE_TOKEN=hf_...`  (EmbeddingGemma betöltéshez és query embedding-hez)
 
-A következő diagram ábrázolja a rendszer főbb logikai egységeit és az adatfolyamot:
+Megjegyzés: a projekt minden felhasználói kimenete magyar nyelvű; a query válasz kizárólag azonosítók listája.
 
-```mermaid
-graph TD
-    subgraph "Lokális Adatfeldolgozás (src/)"
-        P1["Preprocess<br>(preprocess_documents.py)"]
-        P2["Embeddings<br>(create_embeddings_gemini_api.py)"]
-        P3["FAISS Index<br>(build_faiss_index.py)"]
-        P4["Gráf Építés<br>(graph_builder.py)"]
-    end
+## Gyors használat
 
-    subgraph "Lokális Adattárolás (data/)"
-        A["raw/ (Nyers adatok)"]
-        B["processed/ (Feldolgozott adatok)"]
-        C["embeddings/ (Vektorok)"]
-        D["index/ (FAISS)"]
-        E["graph/ (Hivatkozási gráf)"]
-        F["models/ (RL Ágens)"]
-    end
+### 🖥️ Lokális futtatás (CLI)
 
-    subgraph "Keresés és Tanulás (src/)"
-        S1["HybridSearch<br>(semantic_search.py)"]
-        S2["RankingEnv<br>(environment.py)"]
-        S3["RLAgent<br>(agent.py)"]
-        S4["Tréning / Kiértékelés<br>(train_agent.py, evaluate_agent.py)"]
-    end
+```bash
+# Teljes build pipeline (subset → Docling → chunking → BM25 → EmbeddingGemma FAISS)
+python src/cli.py build
 
-    A -- "adat" --> P1 -- "feldolgozott" --> B
-    B -- "szövegek" --> P2 -- "vektorok" --> C
-    C -- "vektorok" --> P3 -- "index" --> D
-    B -- "metaadat" --> P4 -- "gráf" --> E
+# Keresés baseline módban
+python src/cli.py query "családi jogi ügy"
 
-    D -- "index" --> S1
-    E -- "gráf" --> S1
-    B -- "metaadatok" --> S1
+# Keresés GRPO reranking-gal (ha már van trained policy)
+python src/cli.py query "szerződéses jog" --rerank
 
-    S1 -- "kezdeti lista" --> S2
-    S2 <--> S3
-    S3 -- "tréning" --> S4
-    S2 -- "környezet" --> S4
-    S4 -- "mentett modell" --> F
-    F -- "betöltött modell" --> S3
+# GRPO policy tanítása
+python src/cli.py train
 ```
 
-### Főbb Rendszerkomponensek
+### ☁️ RunPod Cloud GPU futtatás
 
-- **Adattárolás**: Az összes adatartefaktum (Parquet, JSON, bináris modellek) központilag, a projekt `data/` könyvtárában van tárolva, logikai alkönyvtár struktúrában.
-- **Adatfeldolgozó Szkriptek**: A `src/data_loader` és `src/embedding` modulokban található szkriptek felelősek a nyers adatok beolvasásáért, feldolgozásáért és az eredmények elmentéséért.
-- **Hibrid Keresési Motor**: A `HybridSearch` osztály (`src/search/semantic_search.py`) betölti a FAISS indexet, a gráfot és a metaadatokat a `data/` könyvtárból.
-- **RL Optimalizálás**: A `RankingEnv` környezet és az `RLAgent` ágens önállóan kezelik a szükséges modellek és adatok betöltését a lokális `data/` könyvtárból, valamint a tanítás során keletkezett modellek mentését.
+A projekt **100%-ban kompatibilis** RunPod cloud GPU-kkal:
 
-## Technológiai Stack
+```bash
+# 1. Notebook feltöltése RunPod-ra
+# 2. GPU instance indítása (32GB+ memória ajánlott)
+# 3. Jupyter notebook futtatása
 
-- **Cloud API**: Google Gemini API (Embedding generáláshoz)
-- **Embedding Model**: `models/text-embedding-004`
-- **Vector Search**: `faiss-cpu` (Facebook AI Similarity Search)
-- **RL Framework**: PyTorch + Gymnasium
-- **Data Processing**: Pandas, NumPy, NetworkX, PyArrow
-- **Infrastructure**: Python 3.9+, Conda
+# Automatikus elérési utak:
+# 📁 Input: /workspace/data/processed/chunks.jsonl
+# 💾 Output: /workspace/data/index/faiss_index.bin
+# 🗺️ Mapping: /workspace/data/index/chunk_id_map.json
 
-## Telepítés és Beállítás
+# Részletes útmutató: notebooks/README_embedding.md
+```
 
-A projekt futtatásához szükséges környezet beállítása `conda` segítségével javasolt az `environment.yml` fájl alapján.
+**Előnyök RunPod-on:**
+- ⚡ **GPU gyorsítás**: 32GB+ memória optimalizálva
+- 🔄 **Streaming feldolgozás**: 3M+ chunk biztonságos kezelése
+- 📦 **Önálló notebook**: Nem függ külső konfigurációktól
+- 🧠 **Memória optimalizált**: FP16 + batch védelem
 
-1.  **Hozza létre a conda környezetet:**
-    ```bash
-    conda env create -f environment.yml
-    ```
+## Futtatás – Részletes build lépések
 
-2.  **Aktiválja a környezetet:**
-    ```bash
-    conda activate courtrankrl
-    ```
+1) Build pipeline:
+- `uv run courtrankrl build`
+  - Automatikusan lefuttatja a Docling és BM25 lépéseket.
 
-3.  **Állítsa be a Gemini API kulcsot:**
-    Hozzon létre egy `.env` fájlt a projekt gyökérkönyvtárában a következő tartalommal, és cserélje ki a placeholder értéket a saját Google Gemini API kulcsára:
+2) Manuális lépések (opcionális):
+- `uv run python src/data_loader/preprocess_documents.py --resume`
+  - Bemenet: `data/raw/` alatti DOCX.
+  - Kimenet: `data/processed/chunks.jsonl` (chunkok minimál metaadatokkal).
 
-    ```ini
-    # .env
-    GEMINI_API_KEY="<AZ_ÖN_GEMINI_API_KULCSA>"
-    ```
-    A rendszer automatikusan betölti ezt a változót a `python-dotenv` csomag segítségével.
+- `uv run python src/data_loader/build_bm25_index.py`
+  - Kimenet: `data/index/bm25_index.json`.
 
-## A Projekt Futtatása
+3) Embedding generálás (kötelező):
+- Használja a `notebooks/qwen_embedding_runpod.ipynb` notebookot
+  - Bemenet: `data/processed/chunks.jsonl`
+  - Kimenetek: `data/index/faiss_index.bin`, `data/index/chunk_id_map.json`.
 
-A teljes adatfeldolgozási és modellépítési lánc a `src/` könyvtárban található szkriptek futtatásával indítható. A szkriptek a `configs/config.py`-ban definiált lokális útvonalakat használják a bemeneti és kimeneti adatok kezelésére.
+## Lekérdezés (hibrid baseline)
 
-**Példa a folyamatra:**
-1.  Helyezze a nyers adatokat (JSON metaadatok és a hozzájuk tartozó RTF/DOCX fájlok) a `data/raw/` könyvtárba.
-2.  Futtassa a `src/data_loader/preprocess_documents.py` szkriptet.
-3.  Futtassa a `src/embedding/create_embeddings_gemini_api.py` szkriptet.
-4.  Futtassa a `src/data_loader/build_faiss_index.py` szkriptet.
-5.  Futtassa a `src/data_loader/graph_builder.py` szkriptet.
-6.  Helyezze a szakértői kiértékeléseket tartalmazó CSV fájlt a `data/evaluations/` könyvtárba.
-7.  Indítsa el a modell tanítását a `src/reinforcement_learning/train_agent.py` szkripttel.
-8.  Értékelje ki a modellt a `src/reinforcement_learning/evaluate_agent.py` szkripttel.
+- `uv run courtrankrl query "kártérítés szivattyú ügy"`
+  - HybridRetriever: BM25 + FAISS, RRF fúzió.
+  - Kimenet: dokumentum azonosítók listája (határozat számok).
 
-## Kutatási Hozzájárulások
+- Opcionális GRPO reranking:
+  - `uv run courtrankrl query "kártérítés szivattyú ügy" --rerank`
+  - Kimenet: GRPO-val újrarangsorolt dokumentum azonosítók.
 
-### 1. Hibrid Keresési Architektúra
-A projekt egy olyan skálázható architektúrát valósít meg, amely kombinálja a szemantikus embeddingeket, a gráf alapú kapcsolati hálózatokat és a megerősítéses tanulást.
+**Fontos:** A lekérdezés előtt futtassa a `qwen_embedding_runpod.ipynb` notebookot az embeddingek és FAISS index generálásához.
 
-### 2. Magyar Jogi Domain Adaptáció
-Specializált pipeline magyar bírósági határozatok feldolgozására, amely figyelembe veszi a jogi terminológia és a magyar nyelv sajátosságait.
+Tippek
+- A hibrid visszakeresés Qwen3-Embedding-0.6B modellt használja a lekérdezés embeddelésére.
+- A Qwen3 használatához GPU/MPS szükséges (M3 MacBook Air optimalizálva).
+- A query embedding real-time történik a betöltött Qwen3 modellel.
+- A Qwen3 model csak akkor töltődik be, ha van FAISS index.
+- M3 MacBook Air: MPS (Metal Performance Shaders) használata a GPU gyorsításhoz.
 
-### 3. Szabály-alapú Reward Modelling
-Innovatív objektív értékelési rendszer, amely szakértői annotáció helyett szabály-alapú kritériumokat használ (pontosság, relevancia, NDCG).
+## RL újrarangsorolás (opcionális PoC)
 
----
+- Tanítás (qrels szükséges):
+  - `uv run courtrankrl train`
+  - Megjegyzés: a tréner whitespace‑delimitált qrels fájlt vár. Állítsd a `configs/config.py` `DEV_QRELS_FILE` értékét a megfelelő fájlra, vagy igazítsd a formátumot.
+- Használat kereséskor: a `courtrankrl query` automatikusan próbálja betölteni a policy‑t (`data/models/rl_policy.pth`), és ha elérhető, a jelölteket újrarangsorolja.
 
-**Készítette**: Zelenyiánszki Máté
-**Intézmény**: Pannon Egyetem
-**Kutatási terület**: Természetes Nyelvfeldolgozás, Információvisszakeresés, Megerősítéses Tanulás
-**Implementáció**: Python, PyTorch, HuggingFace Transformers, FAISS
-**Licenc**: Kutatási célú felhasználás
+## Artefaktumok és elérési utak
+
+- Chunks: `data/processed/chunks.jsonl`
+- BM25 index: `data/index/bm25_index.json`
+- FAISS index: `data/index/faiss_index.bin` (generálva `qwen_embedding_runpod.ipynb`-ban)
+- FAISS ID‑map: `data/index/chunk_id_map.json` (generálva `qwen_embedding_runpod.ipynb`-ban)
+- RL policy: `data/models/rl_policy.pth`
+
+## Konfiguráció (részletek a `configs/config.py` fájlban)
+
+- Chunkolás: méret, átfedés, per‑dokumentum limit.
+- BM25: `BM25_K1`, `BM25_B`.
+- Qwen3: `QWEN3_MODEL_NAME`, `QWEN3_DIMENSION`.
+- Hybrid: `TOP_K_BASELINE`, `RRF_K`.
+- RL: tanulási ráta, epochok, batch méret, rejtett dimenzió.
+
+## Hibaelhárítás
+
+- FAISS index hiányzik: futtassa a `qwen_embedding_runpod.ipynb` notebookot az embeddingek generálásához.
+- Memória: növeld fokozatosan a batch méretet; OOM esetén csökkentse a batch size-ot.
+- GPU: a Qwen3 embedding generáláshoz GPU szükséges.
+
+## Nyelvi irányelv
+
+- A projekt minden felhasználó felé megjelenő kimenete magyar nyelvű.
+- A lekérdezés kimenete kizárólag azonosítókból álló lista (doc_id), magyarázó szöveg nélkül.
+
+—
+
+Készítette: Zelenyiánszki Máté
+Implementáció: Python, Hugging Face Transformers, FAISS, PyTorch
