@@ -33,7 +33,7 @@ High‑Level Pipeline
 
 3) Indexing
 - BM25: tokenization via simple `split()`; store postings, doc_len/avg_len, idf cache.
-- FAISS: HF EmbeddingGemma (HF token from .env); L2‑normalized embeddings with IP metric; adaptive IVF training with a train buffer; `nlist` matched to sample size; add pending batches post‑training.
+- FAISS: HF Qwen3-Embedding (HF token from .env); L2‑normalized embeddings with IP metric; adaptive IVF training with a train buffer; `nlist` matched to sample size; add pending batches post‑training.
 - ID mapping: FAISS row index ↔ chunk_id in a separate file.
 
 4) Hybrid Retrieval (baseline)
