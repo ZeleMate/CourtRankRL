@@ -199,6 +199,19 @@ css = [
 ]
 
 [[package]]
+name = "bm25s"
+version = "0.2.14"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "scipy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/99/72/5ad06c30991ba494242785a3ab8987deb01c07dfc1c492847bde221e62bf/bm25s-0.2.14.tar.gz", hash = "sha256:7b6717770fffbdb3b962e5fe8ef1e6eac7f285d0fbc14484b321e136df837139", size = 59266, upload-time = "2025-09-08T17:06:30.728Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7c/3e/e3ae2f0fb0f8f46f9c787fa419ca5203ff850d0630749a26baf0a6570453/bm25s-0.2.14-py3-none-any.whl", hash = "sha256:76cdb70ae40747941b150a1ec16a9c20c576d6534d0a3c3eebb303c779b3cf65", size = 55128, upload-time = "2025-09-08T17:06:29.324Z" },
+]
+
+[[package]]
 name = "cachetools"
 version = "5.5.2"
 source = { registry = "https://pypi.org/simple" }
@@ -334,6 +347,7 @@ dependencies = [
     { name = "accelerate" },
     { name = "azure-storage-blob" },
     { name = "beautifulsoup4" },
+    { name = "bm25s" },
     { name = "docling" },
     { name = "docling-core" },
     { name = "faiss-cpu" },
@@ -366,6 +380,7 @@ requires-dist = [
     { name = "accelerate" },
     { name = "azure-storage-blob" },
     { name = "beautifulsoup4" },
+    { name = "bm25s" },
     { name = "docling" },
     { name = "docling-core" },
     { name = "faiss-cpu" },
