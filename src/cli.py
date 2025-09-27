@@ -4,9 +4,9 @@ CourtRankRL CLI Interface
 Agents.md specifikáció alapján implementálva.
 
 Parancsok:
-- build: subset selection → Docling feldolgozás → chunking → BM25 → EmbeddingGemma FAISS
-- query: hybrid keresés + GRPO reranking (opcionális)
-- train: GRPO reranker policy tanítása
+- build: Docling feldolgozás → chunking → BM25 index
+- query: hibrid (BM25+FAISS) keresés, opcionális GRPO reranking
+- train: GRPO reranker policy tanítása (baseline → feature export → GRPO)
 """
 
 import argparse
@@ -26,7 +26,6 @@ from src.search.grpo_reranker import GRPOReranker
 def build_command():
     """Build pipeline: Docling → chunking → BM25."""
     print("=== COURTRANKRL BUILD PIPELINE ===")
-    print("Agents.md spec: 1→2→3")
 
     try:
         # Step 1: Ingestion with Docling
@@ -39,8 +38,7 @@ def build_command():
         print("   (Docling decides chunk size and overlap)")
 
         # Step 3: BM25 indexing
-        print("🔍 Step 3: BM25 sparse indexing...")
-        print("   (Tokenization via simple split(), postings, doc_len/avg_len, idf cache)")
+        print("🔍 Step 3: BM25S index (bm25s.tokenize + cache)...")
         build_bm25()
 
         print("\n✅ BUILD PIPELINE COMPLETE!")
@@ -49,7 +47,7 @@ def build_command():
         print(f"   🔍 BM25 Index: {config.BM25_INDEX_PATH}")
 
         print("\n🚀 Ready for queries! Use: uv run courtrankrl query \"your question\"")
-        print("📝 Note: FAISS index and embeddings should be generated using qwen_embedding_runpod.ipynb")
+        print("📝 Note: FAISS index and embeddings should be generated using gemma_embedding_runpod.ipynb")
 
     except Exception as e:
         print(f"\n❌ BUILD FAILED: {e}")
@@ -59,9 +57,9 @@ def build_command():
 def query_command(query: str, top_k: int = 10, rerank: bool = True):
     """Query pipeline: embed query → BM25 + dense → fusion → RL reranking → doc IDs."""
     print("=== COURTRANKRL QUERY PIPELINE ===")
-    print(f"🔍 Query: {query}")
+    print(f"🔍 Lekérdezés: {query}")
     print(f"📊 Top-K: {top_k}")
-    print(f"🧠 Reranking: {'Enabled' if rerank else 'Disabled'}")
+    print(f"🧠 Reranking: {'bekapcsolva' if rerank else 'kikapcsolva'}")
 
     try:
         # Initialize retriever
@@ -70,24 +68,24 @@ def query_command(query: str, top_k: int = 10, rerank: bool = True):
         if rerank:
             # Step 1: Get candidates for reranking (agents.md step 4)
             print("📋 Step 1: Retrieving candidates for reranking...")
-            bm25_results, dense_results = retriever.retrieve_candidates(query, top_k=config.TOP_K_BASELINE)
+            retriever.retrieve_candidates(query, top_k=config.TOP_K_BASELINE)
+            bm25_results = retriever.get_last_doc_scores("bm25")
+            dense_results = retriever.get_last_doc_scores("dense")
 
-            print(f"   📄 BM25 candidates: {len(bm25_results)}")
-            print(f"   🧠 Dense candidates: {len(dense_results)}")
+            print(f"   📄 BM25 jelöltek: {len(bm25_results)}")
+            print(f"   🧠 Dense jelöltek: {len(dense_results)}")
 
             # Step 2: Apply GRPO reranking (agents.md step 5)
             print("🎯 Step 2: Applying GRPO reranking...")
             try:
                 reranker = GRPOReranker()
                 reranker.load_policy(config.RL_POLICY_PATH)
-                reranked_results = reranker.rerank(bm25_results, dense_results)[:top_k]
+                reranked = reranker.rerank(retriever, bm25_results, dense_results)[:top_k]
+                print(f"   ✅ Újrendezett lista: {len(reranked)} dokumentum")
 
-                print(f"   ✅ Reranked to: {len(reranked_results)} documents")
-
-                # Step 3: Output reranked results
-                print("\n🎯 RERANKED RESULTS (Document IDs):")
-                for i, (doc_id, score) in enumerate(reranked_results, 1):
-                    print(f"{i}. {doc_id}")
+                print("\n🎯 RERANKELT EREDMÉNYEK:")
+                for idx, (doc_id, score) in enumerate(reranked, start=1):
+                    print(f"{idx}. {doc_id} (sztochasztikus pont: {score:.4f})")
 
             except Exception as e:
                 print(f"⚠️  Reranker unavailable ({e}), falling back to baseline...")
@@ -98,12 +96,11 @@ def query_command(query: str, top_k: int = 10, rerank: bool = True):
             print("📋 Step 1: Hybrid baseline retrieval...")
             doc_ids = retriever.retrieve(query, top_k=top_k, fusion_method="rrf")
 
-            print(f"   📄 Retrieved documents: {len(doc_ids)}")
+            print(f"   📄 Találatok száma: {len(doc_ids)}")
 
-            # Step 2: Output baseline results
-            print("\n🔍 BASELINE RESULTS (Document IDs):")
-            for i, doc_id in enumerate(doc_ids, 1):
-                print(f"{i}. {doc_id}")
+            print("\n🔍 BASELINE EREDMÉNYEK:")
+            for idx, doc_id in enumerate(doc_ids, start=1):
+                print(f"{idx}. {doc_id}")
 
         print(f"\n✅ Query completed successfully!")
 
@@ -116,22 +113,21 @@ def train_command():
     """Train GRPO reranker: load qrels → baseline candidates → features → GRPO training."""
     print("=== COURTRANKRL GRPO TRAINING PIPELINE ===")
     print("Agents.md spec: 5) RL Reranking (GRPO-style)")
-    print("🎯 Goal: Improve ranking quality via reinforcement learning")
+    print("🎯 Cél: a baseline javítása megerősítéses tanulással")
 
     try:
         from src.search.grpo_reranker import main as train_rl
 
-        print("📚 Loading training data...")
-        print("🎮 Initializing GRPO reranker...")
-        print("🏃 Starting training...")
+        print("📚 Tanító adatok betöltése...")
+        print("🎮 GRPO reranker inicializálása...")
+        print("🏃 Tanítás indítása...")
 
         train_rl()
 
-        print("\n✅ GRPO TRAINING COMPLETE!")
-        print("📊 Training results:")
-        print(f"   🧠 Policy saved: {config.RL_POLICY_PATH}")
-        print("   📈 Ready for improved reranking!")
-        print("\n🚀 Use with queries: uv run courtrankrl query \"question\" --rerank")
+        print("\n✅ GRPO TANÍTÁS KÉSZ!")
+        print("📊 Eredmények:")
+        print(f"   🧠 Policy mentve: {config.RL_POLICY_PATH}")
+        print("   📈 Használd kereséskor a --rerank kapcsolóval!")
 
     except Exception as e:
         print(f"\n❌ GRPO TRAINING FAILED: {e}")
@@ -149,7 +145,7 @@ Példák használatra:
   # Build pipeline futtatása
   uv run courtrankrl build
 
-  # Keresés alap (baseline) módban
+  # Keresés baseline módban
   uv run courtrankrl query "családi jogi ügy" --no-rerank
 
   # Keresés GRPO reranking-gal
@@ -160,7 +156,7 @@ Példák használatra:
 
 Használat előtt:
   1. uv run courtrankrl build
-  2. Generate FAISS index using qwen_embedding_runpod.ipynb
+  2. Generate FAISS index using gemma_embedding_runpod.ipynb
         """
     )
 
