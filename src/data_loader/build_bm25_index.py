@@ -1,25 +1,26 @@
 #!/usr/bin/env python3
 """
-BM25 Sparse Index Builder for CourtRankRL
-Agents.md specifikáció alapján implementálva.
+BM25S Index Builder for CourtRankRL
+Agents.md specifikáció szerint implementálva.
 
 Főbb jellemzők:
-- Hugging Face tokenizálás (AutoTokenizer)
-- Minimal postings és statisztikai struktúra
-- Streaming feldolgozás memória-hatékonyság érdekében
-- JSON output formátum
+- BM25S könyvtár natív tokenizáló használata
+- Token ID-k, szókincs és hossz metaadatok cache-elése
+- BM25S index fájlok (scores/indices/indptr/vocab/params)
+- Chunk ID lista és token statisztikák (hossz eloszlás, összes docs)
 """
 
 import json
 import math
-import os
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, cast
-from collections import defaultdict
+from typing import Any, Dict, List, Optional, Tuple, cast
+
+import numpy as np
 import tqdm
-from dotenv import load_dotenv
-from transformers import AutoTokenizer, PreTrainedTokenizerBase
+
+import bm25s
+from bm25s import tokenization
 
 # Projekt gyökér hozzáadása az import úthoz
 project_root = Path(__file__).resolve().parent.parent.parent
@@ -28,231 +29,343 @@ sys.path.insert(0, str(project_root))
 from configs import config
 
 class BM25Index:
-    """BM25 sparse index with minimal structure per agents.md spec."""
+    """BM25S alapú index a CourtRankRL rendszerhez."""
 
     def __init__(self, k1: float = 1.5, b: float = 0.75):
         self.k1 = k1
         self.b = b
-        # Minimal structure per agents.md spec
-        self.postings = defaultdict(list)  # term -> [(doc_id, term_freq), ...]
-        self.doc_lengths = {}  # doc_id -> length
-        self.doc_freqs = {}  # term -> document frequency
-        self.avg_doc_length = 0
+
+        # BM25S modell és adatok
+        self.bm25s_model = None
+        self.corpus: List[str] = []
+        self.chunk_ids: List[str] = []
         self.total_docs = 0
-        self._tokenizer: Optional[PreTrainedTokenizerBase] = None
+        self.avg_doc_length = 0.0
+        self.doc_lengths: List[int] = []
+        self.vocab: Dict[str, int] = {}
+        self.token_ids: List[List[int]] = []
 
-    def _ensure_tokenizer(self) -> PreTrainedTokenizerBase:
-        """Betölti a HF tokenizálót egyszer és újrahasznosítja."""
-        if self._tokenizer is None:
-            load_dotenv()
-            hf_token = os.getenv("HUGGINGFACE_TOKEN") or os.getenv("HUGGINGFACE_HUB_TOKEN")
-            if not hf_token:
-                raise RuntimeError("Hugging Face token szükséges (.env: HUGGINGFACE_TOKEN)")
+    def _tokenize_query(self, query: str):
+        """Tokenizálás egyetlen lekérdezéshez."""
+        return bm25s.tokenize([query])
 
-            tokenizer_name = getattr(config, 'BM25_TOKENIZER_NAME', None) or config.EMBEDDINGGEMMA_MODEL_NAME
-            try:
-                tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, token=hf_token)
-                self._tokenizer = cast(PreTrainedTokenizerBase, tokenizer)
-            except Exception as exc:
-                raise RuntimeError(f"HF tokenizáló betöltési hiba ({tokenizer_name}): {exc}")
+    @staticmethod
+    def _has_tokens(tokenized: Any) -> bool:
+        """Ellenőrzi, hogy vannak-e tokenek."""
+        if hasattr(tokenized, 'lengths') and tokenized.lengths:
+            return any(length > 0 for length in tokenized.lengths)
+        if hasattr(tokenized, 'ids') and tokenized.ids:
+            return any(len(entry) > 0 for entry in tokenized.ids)
+        return False
 
-        tokenizer = self._tokenizer
-        if tokenizer is None:
-            raise RuntimeError("A tokenizáló inicializálása sikertelen")
-        return tokenizer
+    def _load_token_cache(self, expected_docs: int) -> Optional[tokenization.Tokenized]:
+        """Token cache betöltése, ha létezik és érvényes."""
+        cache_dir = config.BM25_TOKEN_CACHE_DIR
+        ids_path = cache_dir / "token_ids.npy"
+        vocab_path = cache_dir / "vocab.json"
 
-    def _tokenize(self, text: str) -> List[str]:
-        """HF tokenizálás, kisbetűsítve a BM25 konzisztenciához."""
-        tokenizer = self._ensure_tokenizer()
-        raw_tokens = tokenizer.tokenize(text)
-        if not raw_tokens:
-            return []
-        return [token.lower() for token in raw_tokens if token.strip()]
+        if not (config.BM25_USE_CACHE and ids_path.exists() and vocab_path.exists()):
+            return None
 
-    def build_index_streaming(self, chunks_jsonl: Path):
-        """Build minimal BM25 index from chunks JSONL file."""
-        print(f"BM25 index építése: {chunks_jsonl}")
+        try:
+            token_ids_array = np.load(ids_path, allow_pickle=True)
+            token_ids: List[List[int]] = token_ids_array.tolist()
 
-        # Sorok számolása külön passzal a progress bar-hoz
-        with open(chunks_jsonl, 'r', encoding='utf-8') as counter_handle:
-            total_lines = sum(1 for _ in counter_handle)
+            if expected_docs and len(token_ids) != expected_docs:
+                return None
 
-        if total_lines == 0:
-            print("Nincs feldolgozandó chunk – üres a chunks.jsonl.")
-            self.avg_doc_length = 0
-            self.total_docs = 0
+            with open(vocab_path, 'r', encoding='utf-8') as f:
+                vocab: Dict[str, int] = json.load(f)
+
+            return tokenization.Tokenized(ids=token_ids, vocab=vocab)
+        except Exception:
+            # Ha bármilyen hiba van, cache-t figyelmen kívül hagyjuk
+            return None
+
+    def _save_token_cache(self, tokenized: tokenization.Tokenized) -> None:
+        """Token cache mentése a gyors újjáépítéshez."""
+        if not config.BM25_USE_CACHE:
             return
 
-        print(f"Feldolgozandó chunkok: {total_lines:,}")
+        cache_dir = config.BM25_TOKEN_CACHE_DIR
+        cache_dir.mkdir(parents=True, exist_ok=True)
 
-        processed_docs = 0
+        ids_path = cache_dir / "token_ids.npy"
+        vocab_path = cache_dir / "vocab.json"
 
-        with open(chunks_jsonl, 'r', encoding='utf-8') as handle:
-            iterator = tqdm.tqdm(handle, desc="Chunkok feldolgozása", total=total_lines)
-            for line_num, raw_line in enumerate(iterator):
-                line = raw_line.strip()
+        np.save(ids_path, np.array(tokenized.ids, dtype=object), allow_pickle=True)
+        with open(vocab_path, 'w', encoding='utf-8') as f:
+            json.dump(tokenized.vocab, f, ensure_ascii=False)
+
+    def _tokenize_corpus(self, texts: List[str]) -> tokenization.Tokenized:
+        """Tokenizált korpusz előállítása cache figyelembevételével."""
+        cached = self._load_token_cache(len(texts))
+        if cached is not None:
+            print("Token cache betöltve — tokenizálás kihagyva")
+            return cached
+
+        print("Tokenizálás...")
+        if config.BM25_STOPWORDS is None:
+            tokenized_result = bm25s.tokenize(
+                texts,
+                return_ids=True,
+                show_progress=True
+            )
+        else:
+            tokenized_result = bm25s.tokenize(
+                texts,
+                stopwords=config.BM25_STOPWORDS,
+                return_ids=True,
+                show_progress=True
+            )
+
+        tokenized = cast(tokenization.Tokenized, tokenized_result)
+
+        self._save_token_cache(tokenized)
+        return tokenized
+
+    def _build_index_from_texts(self, texts: List[str], chunk_ids: List[str]) -> None:
+        """BM25S index építése szövegekből."""
+        tokenized = self._tokenize_corpus(texts)
+
+        # Token ID-k és szókincs mentése
+        self.token_ids = list(tokenized.ids)
+        self.vocab = dict(tokenized.vocab)
+        self.corpus = texts
+        self.chunk_ids = chunk_ids
+        self.total_docs = len(texts)
+
+        # Dokumentumhosszok számítása
+        self.doc_lengths = [len(ids) for ids in self.token_ids]
+        self.avg_doc_length = sum(self.doc_lengths) / len(self.doc_lengths) if self.doc_lengths else 0.0
+
+        # BM25S index építése
+        print("BM25S index építése...")
+        self.bm25s_model = bm25s.BM25(k1=self.k1, b=self.b)
+
+        if config.BM25_USE_NUMBA:
+            try:
+                self.bm25s_model.activate_numba_scorer()
+                print("Numba gyorsítás aktiválva")
+            except ImportError:
+                print("Numba nem érhető el – CPU alapú scorer marad")
+
+        self.bm25s_model.index(tokenized)
+        self.bm25s_model.corpus = np.array(self.chunk_ids)
+
+        print(f"BM25S index kész: {self.total_docs} dokumentum")
+
+    def build_index(self, chunks_jsonl: Path) -> None:
+        """BM25S index építése chunks JSONL fájlból."""
+        print(f"BM25S index építése: {chunks_jsonl}")
+
+        # JSONL fájl beolvasása
+        texts = []
+        chunk_ids = []
+
+        with open(chunks_jsonl, 'r', encoding='utf-8') as f:
+            for line_num, line in enumerate(f, 1):
+                line = line.strip()
                 if not line:
                     continue
 
                 try:
                     chunk = json.loads(line)
-                except json.JSONDecodeError as exc:
-                    print(f"JSON hiba {line_num + 1}. sorban: {exc}")
+                except json.JSONDecodeError:
+                    print(f"JSON hiba {line_num}. sorban")
                     continue
 
-                chunk_id = str(chunk.get('chunk_id', '')).strip()
-                if not chunk_id:
-                    continue
+                chunk_id = chunk.get('chunk_id', '').strip()
+                text = chunk.get('text', '').strip()
 
-                text = chunk.get('text', '')
-                if not isinstance(text, str):
-                    text = str(text)
+                if chunk_id and text:
+                    texts.append(text)
+                    chunk_ids.append(chunk_id)
 
-                tokens = self._tokenize(text)
-                if not tokens:
-                    continue
-
-                doc_length = len(tokens)
-                self.doc_lengths[chunk_id] = doc_length
-
-                term_freqs: Dict[str, int] = defaultdict(int)
-                for token in tokens:
-                    term_freqs[token] += 1
-
-                for term, freq in term_freqs.items():
-                    self.postings[term].append((chunk_id, freq))
-                    self.doc_freqs[term] = self.doc_freqs.get(term, 0) + 1
-
-                processed_docs += 1
-
-        if processed_docs == 0:
-            print("Nem sikerült érvényes chunkot feldolgozni.")
-            self.avg_doc_length = 0
-            self.total_docs = 0
+        if not texts:
+            print("Nincs érvényes chunk a feldolgozáshoz")
             return
 
-        # Átlagos dokumentum hossz számítása
-        if self.doc_lengths:
-            self.avg_doc_length = sum(self.doc_lengths.values()) / len(self.doc_lengths)
+        print(f"Feldolgozandó chunkok: {len(texts)}")
 
-        self.total_docs = len(self.doc_lengths)
-
-        print(f"BM25 index kész: {self.total_docs:,} dokumentum, {len(self.doc_freqs):,} egyedi kifejezés")
-
-    def build_index(self, chunks_jsonl: Path):
-        """Legacy method for backward compatibility."""
-        self.build_index_streaming(chunks_jsonl)
+        # Index építése
+        self._build_index_from_texts(texts, chunk_ids)
 
     def search(self, query: str, top_k: int = 10) -> List[Tuple[str, float]]:
-        """BM25 keresés minimal struktúrával."""
-        query_tokens = self._tokenize(query)
-        if not query_tokens:
+        """BM25S keresés."""
+        if self.bm25s_model is None or self.total_docs == 0:
             return []
 
-        if self.total_docs == 0 or self.avg_doc_length <= 0:
+        # Tokenizálás
+        query_tokens = self._tokenize_query(query)
+        if not self._has_tokens(query_tokens):
             return []
 
-        # Dokumentum pontszámok gyűjtése
-        doc_scores = defaultdict(float)
+        try:
+            # Keresés
+            k = min(top_k, len(self.chunk_ids))
+            documents, scores = self.bm25s_model.retrieve(
+                query_tokens,
+                corpus=self.chunk_ids,
+                k=k,
+                return_as="tuple",
+                show_progress=False
+            )
 
-        for term in query_tokens:
-            if term in self.postings:
-                # IDF számítása
-                df = self.doc_freqs[term]
-                idf = math.log((self.total_docs - df + 0.5) / (df + 0.5))
+            # Eredmények feldolgozása
+            results = []
+            doc_indices = documents[0] if len(documents) > 0 else []
+            score_values = scores[0] if len(scores) > 0 else []
 
-                # Minden dokumentum pontszámítása ebben a term-ben
-                for doc_id, term_freq in self.postings[term]:
-                    doc_length = self.doc_lengths[doc_id]
+            for doc_idx, score_val in zip(doc_indices, score_values):
+                if isinstance(doc_idx, (int, np.integer)) and 0 <= doc_idx < len(self.chunk_ids):
+                    doc_id = self.chunk_ids[int(doc_idx)]
+                    results.append((doc_id, float(score_val)))
 
-                    # BM25 score számítása
-                    numerator = term_freq * (self.k1 + 1)
-                    denominator = term_freq + self.k1 * (1 - self.b + self.b * doc_length / self.avg_doc_length)
-                    tf_score = numerator / denominator
+            return results
 
-                    doc_scores[doc_id] += idf * tf_score
+        except Exception as e:
+            print(f"BM25S keresési hiba: {e}")
+            return []
 
-        # Rendezés és top-k kiválasztás
-        sorted_scores = sorted(doc_scores.items(), key=lambda x: x[1], reverse=True)
-        return sorted_scores[:top_k]
+    def _get_length_histogram(self, bins: int = 20) -> List[int]:
+        """Hossz eloszlás hisztogram."""
+        if not self.doc_lengths:
+            return []
 
-    def save(self, output_path: Path):
-        """BM25 index mentése JSON formátumban - minimal struktúra."""
-        # Minimal index struktúra per agents.md spec
-        index_data = {
-            'k1': self.k1,
-            'b': self.b,
-            'postings': dict(self.postings),  # term -> [(doc_id, term_freq), ...]
-            'doc_lengths': self.doc_lengths,  # doc_id -> length
-            'doc_freqs': self.doc_freqs,      # term -> document frequency
+        max_len = max(self.doc_lengths)
+        if max_len == 0:
+            return []
+
+        step = math.ceil(max_len / bins)
+        histogram = [0] * bins
+
+        for length in self.doc_lengths:
+            bucket = min(length // step, bins - 1)
+            histogram[bucket] += 1
+
+        return histogram
+
+    def save(self, output_path: Path) -> None:
+        """BM25S index mentése."""
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # BM25S model könyvtár
+        bm25_dir = config.BM25_INDEX_DIR
+        bm25_dir.mkdir(parents=True, exist_ok=True)
+        model_dir = bm25_dir / "bm25s_model"
+        model_dir.mkdir(parents=True, exist_ok=True)
+
+        # BM25S model mentése
+        if self.bm25s_model:
+            self.bm25s_model.save(str(model_dir))
+
+        # Chunk ID-k mentése
+        chunk_ids_path = bm25_dir / "chunk_ids.json"
+        with open(chunk_ids_path, 'w', encoding='utf-8') as f:
+            json.dump(self.chunk_ids, f, ensure_ascii=False, indent=2)
+
+        # Statisztikák mentése
+        histogram = self._get_length_histogram()
+        stats = {
+            'total_docs': self.total_docs,
             'avg_doc_length': self.avg_doc_length,
-            'total_docs': self.total_docs
+            'length_histogram': histogram,
+            'min_doc_length': min(self.doc_lengths) if self.doc_lengths else 0,
+            'max_doc_length': max(self.doc_lengths) if self.doc_lengths else 0,
+            'vocab_size': len(self.vocab),
         }
 
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(output_path, 'w', encoding='utf-8') as f:
-            json.dump(index_data, f, ensure_ascii=False, separators=(',', ':'))
+        stats_path = config.BM25_STATS_PATH
+        with open(stats_path, 'w', encoding='utf-8') as f:
+            json.dump(stats, f, ensure_ascii=False, indent=2)
 
-        print(f"BM25 index mentve: {output_path}")
+        # Index metaadatok
+        index_data = {
+            'model_dir': str(model_dir),
+            'chunk_ids_path': str(chunk_ids_path),
+            'stats_path': str(stats_path),
+        }
+
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(index_data, f, ensure_ascii=False, indent=2)
+
+        print(f"BM25S index mentve: {model_dir}")
 
     @classmethod
     def load(cls, input_path: Path) -> 'BM25Index':
-        """BM25 index betöltése JSON fájlból."""
+        """BM25S index betöltése."""
         with open(input_path, 'r', encoding='utf-8') as f:
             index_data = json.load(f)
 
-        index = cls(k1=index_data['k1'], b=index_data['b'])
-        index.postings = defaultdict(list, index_data['postings'])
-        index.doc_lengths = index_data['doc_lengths']
-        index.doc_freqs = index_data['doc_freqs']
-        index.avg_doc_length = index_data['avg_doc_length']
-        index.total_docs = index_data['total_docs']
+        model_dir = Path(index_data['model_dir'])
+        chunk_ids_path = Path(index_data['chunk_ids_path'])
+        stats_path = Path(index_data['stats_path'])
+
+        # Index példány létrehozása
+        index = cls()
+
+        # Chunk ID-k betöltése
+        if chunk_ids_path.exists():
+            with open(chunk_ids_path, 'r', encoding='utf-8') as f:
+                index.chunk_ids = json.load(f)
+
+        # Statisztikák betöltése
+        if stats_path.exists():
+            with open(stats_path, 'r', encoding='utf-8') as f:
+                stats = json.load(f)
+            index.total_docs = stats.get('total_docs', 0)
+            index.avg_doc_length = stats.get('avg_doc_length', 0.0)
+            index.doc_lengths = stats.get('doc_lengths', [])
+
+        # BM25S model betöltése
+        if model_dir.exists():
+            try:
+                index.bm25s_model = bm25s.BM25.load(str(model_dir), load_corpus=True)
+                print("✅ BM25S modell betöltve")
+            except Exception as e:
+                print(f"BM25S modell betöltési hiba: {e}")
+                index.bm25s_model = None
 
         return index
 
 def main():
-    """BM25 index építése chunks JSONL-ból per agents.md spec."""
+    """BM25S index építése."""
     import argparse
 
-    parser = argparse.ArgumentParser(description='BM25 Index Builder for CourtRankRL')
-    parser.add_argument('--overwrite', action='store_true',
-                       help='Felülírja a meglévő indexet')
+    parser = argparse.ArgumentParser(description='BM25S Index Builder')
+    parser.add_argument('--overwrite', action='store_true', help='Felülírja a meglévő indexet')
 
     args = parser.parse_args()
 
-    # Ellenőrzés: chunks fájl létezik-e
+    # Chunks fájl ellenőrzése
     if not config.CHUNKS_JSONL.exists():
         print(f"Hiba: Chunks fájl nem található: {config.CHUNKS_JSONL}")
         return
 
-    # Ellenőrzés: már létezik-e index
+    # Meglévő index ellenőrzése
     if config.BM25_INDEX_PATH.exists() and not args.overwrite:
-        print(f"BM25 index már létezik: {config.BM25_INDEX_PATH}")
+        print(f"BM25S index már létezik: {config.BM25_INDEX_PATH}")
         print("Használja a --overwrite kapcsolót az újjáépítéshez")
         return
 
-    print("=== BM25 INDEX ÉPÍTÉS ===")
-    print(f"Chunks forrás: {config.CHUNKS_JSONL}")
+    print("=== BM25S INDEX ÉPÍTÉS ===")
+    print(f"Forrás: {config.CHUNKS_JSONL}")
 
-    # BM25 index építése
+    # Index építése
     bm25 = BM25Index(k1=config.BM25_K1, b=config.BM25_B)
 
     try:
-        # Streaming feldolgozás
-        bm25.build_index_streaming(config.CHUNKS_JSONL)
-
-        # Index mentése
-        print(f"\nIndex mentése: {config.BM25_INDEX_PATH}")
+        bm25.build_index(config.CHUNKS_JSONL)
         bm25.save(config.BM25_INDEX_PATH)
 
-        print("\n=== SIKERES INDEX ÉPÍTÉS ===")
-        print(f"Dokumentumok száma: {bm25.total_docs:,}")
-        print(f"Egyedi kifejezések: {len(bm25.doc_freqs):,}")
-        print(f"Átlagos dokumentum hossz: {bm25.avg_doc_length:.1f} token")
-        print(f"Index fájl: {config.BM25_INDEX_PATH}")
+        print("✅ Sikeres index építés")
+        print(f"Dokumentumok: {bm25.total_docs:,}")
+        print(f"Átlag hossz: {bm25.avg_doc_length:.1f}")
+        print(f"Index: {config.BM25_INDEX_PATH}")
 
     except Exception as e:
-        print(f"\n❌ HIBA: {e}")
+        print(f"❌ Hiba: {e}")
         return
 
 if __name__ == '__main__':
