@@ -11,38 +11,38 @@ Főbb jellemzők:
 - Groupwise softmax over candidates
 """
 
+import json
+import random
+import sys
+from pathlib import Path
+from typing import Dict, List, Optional, Sequence, Tuple
+
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import numpy as np
-import json
-import sys
-from pathlib import Path
-from typing import List, Dict, Tuple, Optional
-import random
 
 # Projekt gyökér hozzáadása az import úthoz
 project_root = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 from configs import config
+from src.search.hybrid_search import HybridRetriever
 
 class RankingPolicy(nn.Module):
-    """Neural network policy for ranking - agents.md spec: linear or shallow MLP head."""
+    """Shallow MLP policy (agents.md specifikáció)."""
 
-    def __init__(self, input_dim: int = 3, hidden_dim: int = 64):
+    def __init__(self, input_dim: int = 4, hidden_dim: int = config.RL_HIDDEN_DIM):
         super().__init__()
-        # Shallow MLP per agents.md spec - RunPod GPU optimalizált
         self.network = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, 1),
-            nn.Sigmoid()  # Output ranking score 0-1
+            nn.Sigmoid(),
         )
 
-        # RunPod 5090 GPU optimalizáció
         if torch.cuda.is_available():
-            self.cuda()  # Move to GPU if available
+            self.cuda()
 
     def forward(self, x):
         return self.network(x)
@@ -53,67 +53,85 @@ class GRPOReranker:
     def __init__(self):
         self.policy = RankingPolicy()
         self.optimizer = optim.Adam(self.policy.parameters(), lr=config.RL_LEARNING_RATE)
-        self.device = torch.device('cpu')  # VRAM efficient, no GPU
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.policy.to(self.device)
 
-        # Unsloth-inspired memory optimizations
-        self.baseline_history = []  # Rolling baseline for stable training
-        self.reward_std_history = []  # Global reward std tracking
-        self.memory_efficient = True  # Enable memory optimizations
+        self.baseline_history: List[float] = []
+        self.reward_std_history: List[float] = []
+        self.memory_efficient = True
 
-    def extract_features(self, bm25_results: List[Tuple[str, float]],
-                        dense_results: List[Tuple[str, float]]) -> List[np.ndarray]:
-        """
-        Extract features for each candidate document:
-        [dense_similarity, normalized_bm25_score, rank_difference]
-        Agents.md spec: dense similarity, normalized BM25 score, rank difference
-        """
-        features = []
+    def extract_features(
+        self,
+        doc_ids: List[str],
+        bm25_scores: Dict[str, float],
+        dense_scores: Dict[str, float],
+        chunk_groups: Dict[str, List[Tuple[str, float]]],
+        retriever: HybridRetriever,
+    ) -> np.ndarray:
+        features: List[np.ndarray] = []
 
-        # Create score dictionaries
-        bm25_scores = dict(bm25_results)
-        dense_scores = dict(dense_results)
+        bm25_vals = list(bm25_scores.values())
+        bm25_mean = np.mean(bm25_vals) if bm25_vals else 0.0
+        bm25_std = np.std(bm25_vals) if bm25_vals else 1.0
+        if bm25_std == 0:
+            bm25_std = 1.0
 
-        # Get all unique doc IDs
-        all_doc_ids = set(bm25_scores.keys()) | set(dense_scores.keys())
-
-        # Calculate normalized BM25 scores
-        if bm25_scores:
-            bm25_values = list(bm25_scores.values())
-            bm25_mean = np.mean(bm25_values)
-            bm25_std = np.std(bm25_values)
-            bm25_std = bm25_std if bm25_std > 0 else 1.0  # Handle zero variance
-
-        for doc_id in all_doc_ids:
-            dense_score = dense_scores.get(doc_id, 0.0)
+        for doc_id in doc_ids:
             bm25_score = bm25_scores.get(doc_id, 0.0)
+            dense_score = dense_scores.get(doc_id, 0.0)
+            normalized_bm25 = (bm25_score - bm25_mean) / bm25_std
 
-            # Normalized BM25 score (z-score)
-            if bm25_scores:
-                normalized_bm25 = (bm25_score - bm25_mean) / bm25_std
+            # Rang különbség a top listákból
+            bm25_rank = self._get_rank(doc_id, bm25_scores)
+            dense_rank = self._get_rank(doc_id, dense_scores)
+            rank_diff = abs(bm25_rank - dense_rank)
+
+            # Token hossz feature – átlag chunk hossz
+            chunk_list = chunk_groups.get(doc_id, [])
+            if chunk_list and retriever.bm25:
+                lengths = []
+                for chunk_id, _ in chunk_list:
+                    try:
+                        parts = chunk_id.split("_")
+                        lengths.append(int(parts[-1]))
+                    except Exception:
+                        continue
+                token_len = np.mean(lengths) if lengths else retriever.bm25.avg_doc_length
             else:
-                normalized_bm25 = 0.0
+                token_len = retriever.bm25.avg_doc_length if retriever.bm25 else 0.0
 
-            # Rank difference (simple difference between methods)
-            rank_diff = abs(dense_score - bm25_score)
+            features.append(
+                np.array([dense_score, normalized_bm25, rank_diff, token_len], dtype=np.float32)
+            )
 
-            features.append(np.array([dense_score, normalized_bm25, rank_diff]))
+        return np.stack(features) if features else np.zeros((0, 4), dtype=np.float32)
 
-        return features
+    @staticmethod
+    def _get_rank(doc_id: str, scores: Dict[str, float]) -> int:
+        if not scores:
+            return 0
+        ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+        for idx, (candidate, _) in enumerate(ranked, start=1):
+            if candidate == doc_id:
+                return idx
+        return len(ranked) + 1
 
-    def calculate_ndcg(self, predicted_ranks: List[int], true_relevance: List[int],
-                       k: int = 10) -> float:
+    def calculate_ndcg(
+        self,
+        predicted_ranks: Sequence[int],
+        true_relevance: Sequence[float],
+        k: int = 10,
+    ) -> float:
         """Calculate NDCG@k."""
         if not true_relevance:
             return 0.0
 
-        # DCG
         dcg = 0.0
         for i in range(min(k, len(predicted_ranks))):
             if i < len(true_relevance):
                 rel = true_relevance[predicted_ranks[i]]
                 dcg += rel / np.log2(i + 2)
 
-        # IDCG (ideal DCG)
         sorted_rel = sorted(true_relevance, reverse=True)
         idcg = 0.0
         for i in range(min(k, len(sorted_rel))):
@@ -121,9 +139,14 @@ class GRPOReranker:
 
         return dcg / idcg if idcg > 0 else 0.0
 
-    def train_step(self, bm25_results: List[Tuple[str, float]],
-                  dense_results: List[Tuple[str, float]],
-                  qrel_data: Dict[str, int]):
+    def train_step(
+        self,
+        retriever: HybridRetriever,
+        query_id: str,
+        bm25_results: List[Tuple[str, float]],
+        dense_results: List[Tuple[str, float]],
+        qrel_data: Dict[str, int],
+    ):
         """
         Single GRPO training step with Unsloth-inspired memory optimizations.
         Uses group-relative rewards and efficient memory usage.
@@ -131,128 +154,116 @@ class GRPOReranker:
         if not bm25_results and not dense_results:
             return None
 
-        # Extract features
-        features = self.extract_features(bm25_results, dense_results)
+        bm25_scores = dict(bm25_results)
+        dense_scores = dict(dense_results)
 
-        if not features:
+        all_doc_ids_sorted = sorted(
+            set(bm25_scores.keys()) | set(dense_scores.keys()),
+            key=lambda doc: bm25_scores.get(doc, 0.0) + dense_scores.get(doc, 0.0),
+            reverse=True,
+        )
+
+        features = self.extract_features(
+            all_doc_ids_sorted,
+            bm25_scores,
+            dense_scores,
+            getattr(retriever, "bm25_chunk_groups", {}),
+            retriever,
+        )
+
+        if features.size == 0:
             return None
 
-        # Memory efficient tensor creation
-        features_tensor = torch.FloatTensor(features)
+        features_tensor = torch.tensor(features, dtype=torch.float32, device=self.device)
 
-        # Get policy scores and apply groupwise softmax (Unsloth approach)
         with torch.no_grad():
             policy_scores = self.policy(features_tensor).squeeze()
             softmax_scores = torch.softmax(policy_scores, dim=0)
 
-        # Create ranking based on policy scores
         ranked_indices = torch.argsort(softmax_scores, descending=True)
 
-        # Get document IDs
-        bm25_scores = dict(bm25_results)
-        dense_scores = dict(dense_results)
-        all_doc_ids = list(set(bm25_scores.keys()) | set(dense_scores.keys()))
-
-        # Calculate true relevance
+        all_doc_ids = all_doc_ids_sorted
         true_relevance = [qrel_data.get(doc_id, 0) for doc_id in all_doc_ids]
 
-        # Calculate NDCG@10
-        baseline_ndcg = self.calculate_ndcg(list(range(len(all_doc_ids))), true_relevance, k=10)
+        baseline_ndcg = self.calculate_ndcg(
+            list(range(len(all_doc_ids))), true_relevance, k=10
+        )
         policy_ndcg = self.calculate_ndcg(ranked_indices.tolist(), true_relevance, k=10)
 
-        # Group-relative reward with Unsloth-style optimization
         reward = policy_ndcg - baseline_ndcg
 
-        # Update rolling baseline (Unsloth memory optimization)
         self.baseline_history.append(baseline_ndcg)
-        if len(self.baseline_history) > 100:  # Rolling window
+        if len(self.baseline_history) > 100:
             self.baseline_history.pop(0)
 
-        # Update global reward std (Unsloth approach)
         self.reward_std_history.append(reward)
         if len(self.reward_std_history) > 50:
             self.reward_std_history.pop(0)
 
-        # Memory efficient GRPO update
-        if self.memory_efficient:
-            # Calculate advantage using group-relative method
-            if len(self.baseline_history) > 10:
-                group_baseline = np.mean(self.baseline_history[-10:])
-                if len(self.reward_std_history) > 5:
-                    global_std = np.std(self.reward_std_history) + 1e-8
-                    advantage = (reward - group_baseline) / global_std
-                else:
-                    advantage = reward - group_baseline
-            else:
-                advantage = reward
-        else:
-            advantage = reward
+        advantage = reward
+        if self.memory_efficient and len(self.baseline_history) > 5:
+            group_baseline = np.mean(self.baseline_history[-10:]) if len(self.baseline_history) >= 10 else np.mean(self.baseline_history)
+            advantage = reward - group_baseline
+            if len(self.reward_std_history) > 5:
+                global_std = np.std(self.reward_std_history) + 1e-8
+                advantage /= global_std
 
-        # GRPO-style loss calculation
-        if advantage > 0:
-            # Positive advantage - reinforce
-            loss = -torch.mean(softmax_scores[ranked_indices[:10]] * advantage)
-        else:
-            # Negative advantage - discourage
-            loss = torch.mean(softmax_scores[ranked_indices[:10]] * (-advantage))
+        top_indices = ranked_indices[: min(10, len(ranked_indices))]
+        selected_scores = softmax_scores[top_indices]
 
-        # Memory efficient backprop
+        advantage_tensor = torch.tensor(float(advantage), dtype=torch.float32, device=self.device)
+        loss = -advantage_tensor * torch.mean(selected_scores)
+
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
 
         return reward
 
-    def rerank(self, bm25_results: List[Tuple[str, float]],
-               dense_results: List[Tuple[str, float]]) -> List[Tuple[str, float]]:
-        """
-        Rerank candidates using trained policy with groupwise softmax.
-        Agents.md spec: linear or shallow MLP head; groupwise softmax over candidates.
-        """
+    def rerank(
+        self,
+        retriever: HybridRetriever,
+        bm25_results: List[Tuple[str, float]],
+        dense_results: List[Tuple[str, float]],
+    ) -> List[Tuple[str, float]]:
         if not bm25_results and not dense_results:
             return []
 
-        # Extract features for all candidates
-        features = self.extract_features(bm25_results, dense_results)
-
-        if not features:
-            # Fallback to BM25 results
-            return bm25_results
-
-        features_tensor = torch.FloatTensor(features)
-
-        with torch.no_grad():
-            # Policy scores (0-1 range from sigmoid)
-            policy_scores = self.policy(features_tensor).squeeze()
-
-            # Groupwise softmax over candidates (agents.md spec)
-            softmax_scores = torch.softmax(policy_scores, dim=0)
-
-        # Get document IDs in same order as features
         bm25_scores = dict(bm25_results)
         dense_scores = dict(dense_results)
-        all_doc_ids = list(set(bm25_scores.keys()) | set(dense_scores.keys()))
+        all_doc_ids = sorted(
+            set(bm25_scores.keys()) | set(dense_scores.keys()),
+            key=lambda doc: bm25_scores.get(doc, 0.0) + dense_scores.get(doc, 0.0),
+            reverse=True,
+        )
 
-        # Create ranking based on softmax scores
+        features = self.extract_features(
+            all_doc_ids,
+            bm25_scores,
+            dense_scores,
+            getattr(retriever, "bm25_chunk_groups", {}),
+            retriever,
+        )
+        if features.size == 0:
+            return bm25_results
+
+        features_tensor = torch.tensor(features, dtype=torch.float32, device=self.device)
+        with torch.no_grad():
+            policy_scores = self.policy(features_tensor).squeeze()
+            softmax_scores = torch.softmax(policy_scores, dim=0)
+
         ranked_indices = torch.argsort(softmax_scores, descending=True)
-
         reranked = []
         for idx in ranked_indices:
-            doc_id = all_doc_ids[idx.item()]
-            new_score = softmax_scores[idx].item()
-            reranked.append((doc_id, new_score))
-
+            doc_id = all_doc_ids[int(idx)]
+            reranked.append((doc_id, float(softmax_scores[idx].item())))
         return reranked
 
-    def evaluate(self, test_queries: List[str], qrels: Dict[str, Dict[str, int]]):
+    def evaluate(self, retriever: HybridRetriever, test_queries: List[str], qrels: Dict[str, Dict[str, int]]):
         """
         Evaluate reranker performance vs baseline.
         Agents.md spec: numeric comparison baseline vs rerank.
         """
-        from src.search.hybrid_search import HybridRetriever
-
-        retriever = HybridRetriever()
-
         total_baseline_ndcg = 0.0
         total_reranked_ndcg = 0.0
         num_queries = 0
@@ -263,8 +274,9 @@ class GRPOReranker:
             if query not in qrels:
                 continue
 
-            # Get retrieval results
-            bm25_results, dense_results = retriever.retrieve_candidates(query, top_k=50)
+            retriever.retrieve_candidates(query, top_k=50)
+            bm25_results = retriever.get_last_doc_scores("bm25")
+            dense_results = retriever.get_last_doc_scores("dense")
 
             if not bm25_results:
                 continue
@@ -274,8 +286,7 @@ class GRPOReranker:
             true_relevance = [qrels[query].get(doc_id, 0) for doc_id in baseline_doc_ids]
             baseline_ndcg = self.calculate_ndcg(list(range(len(baseline_doc_ids))), true_relevance)
 
-            # Reranked results
-            reranked_results = self.rerank(bm25_results, dense_results)
+            reranked_results = self.rerank(retriever, bm25_results, dense_results)
             reranked_doc_ids = [doc_id for doc_id, _ in reranked_results]
             true_relevance_reranked = [qrels[query].get(doc_id, 0) for doc_id in reranked_doc_ids]
             reranked_ndcg = self.calculate_ndcg(list(range(len(reranked_doc_ids))), true_relevance_reranked)
@@ -382,12 +393,18 @@ def main():
 
         for query_id, relevance_data in qrels.items():
             try:
-                # Get real retrieval results for this query
-                bm25_results, dense_results = retriever.retrieve_candidates(query_id, top_k=50)
+                retriever.retrieve_candidates(query_id, top_k=50)
+                bm25_results = retriever.get_last_doc_scores("bm25")
+                dense_results = retriever.get_last_doc_scores("dense")
 
-                # Only train if we have both BM25 and dense results
-                if bm25_results and dense_results:
-                    reward = reranker.train_step(bm25_results, dense_results, relevance_data)
+                if bm25_results:
+                    reward = reranker.train_step(
+                        retriever,
+                        query_id,
+                        bm25_results,
+                        dense_results,
+                        relevance_data,
+                    )
                     if reward is not None:
                         total_reward += reward
                         num_queries += 1
@@ -400,7 +417,7 @@ def main():
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-        if epoch_end:
+        if epoch_end and epoch_start:
             epoch_end.record()
             torch.cuda.synchronize()
             epoch_time = epoch_start.elapsed_time(epoch_end) / 1000
@@ -421,7 +438,7 @@ def main():
     # Final evaluation
     print(f"\n=== VÉGÉRTÉKELÉS ===")
     try:
-        eval_results = reranker.evaluate(list(qrels.keys())[:10], qrels)  # Evaluate on first 10 queries
+        eval_results = reranker.evaluate(retriever, list(qrels.keys())[:10], qrels)
         if eval_results:
             print("Baseline NDCG@10: .4f")
             print("Reranked NDCG@10: .4f")
