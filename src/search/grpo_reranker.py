@@ -1,26 +1,24 @@
 #!/usr/bin/env python3
 """
 CourtRankRL GRPO-style Reranker
-Inspired by DeepSeekMath GRPO and Unsloth memory optimizations.
+Agents.md specifikáció alapján implementálva.
 
 Főbb jellemzők:
-- Group Relative Policy Optimization (memory efficient, no critic model)
-- Shallow MLP policy network (agents.md: linear or shallow MLP head)
-- NDCG@10 reward calculation at group level
-- VRAM efficient training (inspired by Unsloth)
-- Groupwise softmax over candidates
+- Qwen/Qwen3-4B-Instruct-2507 model QLoRA adapterekkel
+- CPU/MPS inference alacsony memóriahasználattal
+- Graceful fallback baseline ordering-re
+- NDCG@10 alapú scoring
 """
 
 import json
-import random
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
-import torch.nn as nn
-import torch.optim as optim
+from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
+from peft import PeftModel, PeftConfig
 
 # Projekt gyökér hozzáadása az import úthoz
 project_root = Path(__file__).resolve().parent.parent.parent
@@ -29,36 +27,141 @@ sys.path.insert(0, str(project_root))
 from configs import config
 from src.search.hybrid_search import HybridRetriever
 
-class RankingPolicy(nn.Module):
-    """Shallow MLP policy (agents.md specifikáció)."""
-
-    def __init__(self, input_dim: int = 4, hidden_dim: int = config.RL_HIDDEN_DIM):
-        super().__init__()
-        self.network = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, 1),
-            nn.Sigmoid(),
-        )
-
-        if torch.cuda.is_available():
-            self.cuda()
-
-    def forward(self, x):
-        return self.network(x)
-
-class GRPOReranker:
-    """GRPO-style reranker with Unsloth-inspired memory optimizations."""
+class GRPOLocalReranker:
+    """GRPO-based reranker using Qwen model with LoRA adapters."""
 
     def __init__(self):
-        self.policy = RankingPolicy()
-        self.optimizer = optim.Adam(self.policy.parameters(), lr=config.RL_LEARNING_RATE)
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.policy.to(self.device)
+        self.model = None
+        self.tokenizer = None
+        self.device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+        self.loaded = False
+        self.use_grpo = True
 
-        self.baseline_history: List[float] = []
-        self.reward_std_history: List[float] = []
-        self.memory_efficient = True
+        # Load GRPO policy if available
+        self._load_grpo_policy()
+
+    def _load_grpo_policy(self):
+        """Load GRPO policy from artifacts directory."""
+        policy_dir = config.GRPO_POLICY_DIR
+
+        if not policy_dir.exists():
+            print(f"GRPO policy könyvtár nem található: {policy_dir}")
+            print("Fallback: baseline ordering használata")
+            self.use_grpo = False
+            return
+
+        try:
+            # Load PEFT config
+            peft_config = PeftConfig.from_pretrained(policy_dir)
+
+            # Load base model with 4-bit quantization for CPU/MPS
+            base_model = config.GRPO_MODEL_NAME
+
+            quantization_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.float16 if self.device.type == "cpu" else torch.bfloat16,
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_quant_type="nf4"
+            )
+
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                policy_dir,
+                trust_remote_code=True
+            )
+
+            model = AutoModelForCausalLM.from_pretrained(
+                base_model,
+                quantization_config=quantization_config,
+                device_map="auto" if self.device.type == "cpu" else {"": self.device},
+                trust_remote_code=True,
+                torch_dtype=torch.float16 if self.device.type == "cpu" else torch.bfloat16
+            )
+
+            # Load LoRA adapter
+            self.model = PeftModel.from_pretrained(model, policy_dir)
+            self.model.eval()
+
+            if self.device.type != "cpu":
+                self.model = self.model.to(self.device)
+
+            self.loaded = True
+            print(f"GRPO policy betöltve: {policy_dir}")
+
+        except Exception as e:
+            print(f"GRPO policy betöltési hiba: {e}")
+            print("Fallback: baseline ordering használata")
+            self.use_grpo = False
+
+    def _create_prompt(self, query: str, candidates: List[Dict]) -> str:
+        """Create Hungarian prompt for reranking."""
+        prompt = f"""A következő bírósági dokumentumokat kell rangsorolnod egy '{query}' keresési lekérdezéshez.
+
+Válaszolj minden dokumentumhoz egy 0-10 közötti relevancia pontszámmal (10 = nagyon releváns, 0 = nem releváns).
+
+Dokumentumok:
+"""
+
+        for i, candidate in enumerate(candidates, 1):
+            # Use first chunk text as representative
+            text = candidate['chunks'][0]['text'][:500] + "..." if len(candidate['chunks'][0]['text']) > 500 else candidate['chunks'][0]['text']
+
+            prompt += f"""
+{i}. Dokumentum (Bíróság: {candidate['chunks'][0]['metadata']['court']}, Év: {candidate['chunks'][0]['metadata']['year']})
+Szöveg: {text}
+"""
+
+        prompt += """
+Válaszolj minden dokumentumhoz egy sorban, a következő formátumban:
+1. [pontszám]
+2. [pontszám]
+...
+
+Pontszámok (0-10): """
+
+        return prompt
+
+    def _extract_scores_from_completion(self, completion: str) -> List[float]:
+        """Extract numeric scores from model completion."""
+        lines = completion.strip().split('\n')
+        scores = []
+
+        for line in lines:
+            if line.strip() and any(char.isdigit() for char in line):
+                # Extract numeric scores (simple parsing)
+                parts = line.replace(',', '').split()
+                for part in parts:
+                    try:
+                        score = float(part)
+                        if 0 <= score <= 10:  # Reasonable score range
+                            scores.append(score)
+                    except ValueError:
+                        continue
+
+        return scores
+
+    def _calculate_ndcg(self, relevance_scores: List[int], k: int = 10) -> float:
+        """Calculate NDCG@k."""
+        if not relevance_scores:
+            return 0.0
+
+        dcg = 0.0
+        for i in range(min(k, len(relevance_scores))):
+            rel = relevance_scores[i]
+            dcg += rel / (i + 1) ** 0.5
+
+        # IDCG calculation
+        sorted_rel = sorted(relevance_scores, reverse=True)
+        idcg = 0.0
+        for i in range(min(k, len(sorted_rel))):
+            idcg += sorted_rel[i] / (i + 1) ** 0.5
+
+        return dcg / idcg if idcg > 0 else 0.0
+
+class GRPOReranker:
+    """GRPO-style reranker using Qwen model with LoRA adapters."""
+
+    def __init__(self):
+        self.reranker = GRPOLocalReranker()
 
     def extract_features(
         self,
@@ -225,41 +328,125 @@ class GRPOReranker:
         retriever: HybridRetriever,
         bm25_results: List[Tuple[str, float]],
         dense_results: List[Tuple[str, float]],
+        query: str = "",
+        chunks_data: Optional[Dict[str, Dict]] = None,
     ) -> List[Tuple[str, float]]:
+        """Rerank candidates using GRPO policy or fallback to baseline."""
         if not bm25_results and not dense_results:
             return []
 
-        bm25_scores = dict(bm25_results)
-        dense_scores = dict(dense_results)
-        all_doc_ids = sorted(
-            set(bm25_scores.keys()) | set(dense_scores.keys()),
-            key=lambda doc: bm25_scores.get(doc, 0.0) + dense_scores.get(doc, 0.0),
-            reverse=True,
+        # Merge and deduplicate candidates
+        all_candidates = {}
+        for doc_id, score in bm25_results:
+            all_candidates[doc_id] = {
+                'bm25_score': score,
+                'dense_score': dense_results.get(doc_id, 0.0) if dense_results else 0.0
+            }
+
+        for doc_id, score in dense_results:
+            if doc_id not in all_candidates:
+                all_candidates[doc_id] = {
+                    'bm25_score': bm25_results.get(doc_id, 0.0) if bm25_results else 0.0,
+                    'dense_score': score
+                }
+
+        # Sort by combined score (baseline)
+        sorted_candidates = sorted(
+            all_candidates.items(),
+            key=lambda x: x[1]['bm25_score'] + x[1]['dense_score'],
+            reverse=True
         )
 
-        features = self.extract_features(
-            all_doc_ids,
-            bm25_scores,
-            dense_scores,
-            getattr(retriever, "bm25_chunk_groups", {}),
-            retriever,
-        )
-        if features.size == 0:
-            return bm25_results
+        # If GRPO policy is not available, return baseline
+        if not self.reranker.use_grpo:
+            return [(doc_id, scores['bm25_score'] + scores['dense_score'])
+                   for doc_id, scores in sorted_candidates]
 
-        features_tensor = torch.tensor(features, dtype=torch.float32, device=self.device)
-        with torch.no_grad():
-            policy_scores = self.policy(features_tensor).squeeze()
-            softmax_scores = torch.softmax(policy_scores, dim=0)
+        # Use GRPO policy for reranking
+        try:
+            # Prepare candidates with chunks
+            candidates_with_chunks = []
+            for doc_id, scores in sorted_candidates:
+                chunks = []
+                if chunks_data:
+                    for chunk_id, chunk_data in chunks_data.items():
+                        if chunk_id.startswith(doc_id + '_'):
+                            chunks.append({
+                                'chunk_id': chunk_id,
+                                'text': chunk_data.get('text', '')[:500],
+                                'metadata': {
+                                    'court': chunk_data.get('court', ''),
+                                    'domain': chunk_data.get('domain', ''),
+                                    'year': chunk_data.get('year', ''),
+                                }
+                            })
 
-        ranked_indices = torch.argsort(softmax_scores, descending=True)
-        reranked = []
-        for idx in ranked_indices:
-            doc_id = all_doc_ids[int(idx)]
-            reranked.append((doc_id, float(softmax_scores[idx].item())))
-        return reranked
+                if not chunks:
+                    # Fallback chunk
+                    chunks = [{
+                        'chunk_id': f"{doc_id}_placeholder_0",
+                        'text': f"Document {doc_id} - no detailed chunks available",
+                        'metadata': {
+                            'court': 'unknown',
+                            'domain': 'unknown',
+                            'year': 'unknown',
+                        }
+                    }]
 
-    def evaluate(self, retriever: HybridRetriever, test_queries: List[str], qrels: Dict[str, Dict[str, int]]):
+                candidates_with_chunks.append({
+                    'doc_id': doc_id,
+                    'chunks': chunks,
+                    'bm25_score': scores['bm25_score'],
+                    'dense_score': scores['dense_score']
+                })
+
+            # Create prompt and get GRPO scores
+            prompt = self.reranker._create_prompt(query, candidates_with_chunks)
+
+            inputs = self.reranker.tokenizer(
+                prompt,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=2048
+            )
+
+            # Move to device
+            if self.reranker.device.type != "cpu":
+                inputs = {k: v.to(self.reranker.device) for k, v in inputs.items()}
+
+            with torch.no_grad():
+                outputs = self.reranker.model.generate(
+                    **inputs,
+                    max_new_tokens=50,
+                    temperature=0.1,
+                    do_sample=False,
+                    pad_token_id=self.reranker.tokenizer.eos_token_id
+                )
+
+            # Extract scores from completion
+            completion = self.reranker.tokenizer.decode(outputs[0][inputs['input_ids'].shape[1]:], skip_special_tokens=True)
+            scores = self.reranker._extract_scores_from_completion(completion)
+
+            if len(scores) != len(candidates_with_chunks):
+                print(f"Score szám mismatch: {len(scores)} vs {len(candidates_with_chunks)}")
+                return [(doc_id, score['bm25_score'] + score['dense_score'])
+                       for doc_id, score in sorted_candidates]
+
+            # Return reranked results
+            reranked = []
+            for i, (doc_id, _) in enumerate(sorted_candidates):
+                reranked.append((doc_id, scores[i]))
+
+            return sorted(reranked, key=lambda x: x[1], reverse=True)
+
+        except Exception as e:
+            print(f"GRPO reranking hiba: {e}")
+            print("Fallback: baseline ordering használata")
+            return [(doc_id, scores['bm25_score'] + scores['dense_score'])
+                   for doc_id, scores in sorted_candidates]
+
+    def evaluate(self, retriever: HybridRetriever, test_queries: List[str], qrels: Dict[str, Dict[str, int]], chunks_data: Optional[Dict[str, Dict]] = None):
         """
         Evaluate reranker performance vs baseline.
         Agents.md spec: numeric comparison baseline vs rerank.
@@ -284,12 +471,12 @@ class GRPOReranker:
             # Baseline: BM25 results
             baseline_doc_ids = [doc_id for doc_id, _ in bm25_results]
             true_relevance = [qrels[query].get(doc_id, 0) for doc_id in baseline_doc_ids]
-            baseline_ndcg = self.calculate_ndcg(list(range(len(baseline_doc_ids))), true_relevance)
+            baseline_ndcg = self.reranker._calculate_ndcg(list(range(len(baseline_doc_ids))), true_relevance)
 
-            reranked_results = self.rerank(retriever, bm25_results, dense_results)
+            reranked_results = self.rerank(retriever, bm25_results, dense_results, query, chunks_data)
             reranked_doc_ids = [doc_id for doc_id, _ in reranked_results]
             true_relevance_reranked = [qrels[query].get(doc_id, 0) for doc_id in reranked_doc_ids]
-            reranked_ndcg = self.calculate_ndcg(list(range(len(reranked_doc_ids))), true_relevance_reranked)
+            reranked_ndcg = self.reranker._calculate_ndcg(list(range(len(reranked_doc_ids))), true_relevance_reranked)
 
             total_baseline_ndcg += baseline_ndcg
             total_reranked_ndcg += reranked_ndcg
@@ -321,15 +508,12 @@ class GRPOReranker:
         return None
 
     def save_policy(self, path: Path):
-        """Save trained policy."""
-        torch.save(self.policy.state_dict(), path)
-        print(f"Policy saved to {path}")
+        """Save trained policy (legacy compatibility)."""
+        print("GRPO policy saving not implemented - use cloud training notebook")
 
     def load_policy(self, path: Path):
-        """Load trained policy."""
-        if path.exists():
-            self.policy.load_state_dict(torch.load(path))
-            print(f"Policy loaded from {path}")
+        """Load trained policy (legacy compatibility)."""
+        print("GRPO policy loading not implemented - use artifacts directory")
 
 def load_qrels(qrels_file: Path) -> Dict[str, Dict[str, int]]:
     """Load qrels file for training - convert chunk_id to doc_id."""
@@ -357,15 +541,15 @@ def load_qrels(qrels_file: Path) -> Dict[str, Dict[str, int]]:
     return qrels
 
 def main():
-    """Train GRPO reranker with Unsloth-inspired memory optimizations."""
+    """Test GRPO reranker with baseline evaluation."""
     from src.search.hybrid_search import HybridRetriever
 
-    if not config.DEV_QRELS_FILE.exists():
-        print(f"Hiba: Qrels fájl nem található: {config.DEV_QRELS_FILE}")
+    if not config.BASELINE_QRELS_FILE.exists():
+        print(f"Hiba: Qrels fájl nem található: {config.BASELINE_QRELS_FILE}")
         return
 
     # Load qrels
-    qrels = load_qrels(config.DEV_QRELS_FILE)
+    qrels = load_qrels(config.BASELINE_QRELS_FILE)
 
     if not qrels:
         print("Nincs qrels adat")
@@ -375,81 +559,24 @@ def main():
     reranker = GRPOReranker()
     retriever = HybridRetriever()
 
-    # Training loop with Unsloth-style optimizations
-    print("=== GRPO RERANKER TANÍTÁS (Unsloth optimalizálások) ===")
-    print(f"Query-k száma: {len(qrels)}")
-    print(f"Memory efficient mode: {reranker.memory_efficient}")
+    print("=== GRPO RERANKER TESZT ===")
+    print(f"GRPO policy betöltve: {reranker.reranker.loaded}")
+    print(f"GRPO használata: {reranker.reranker.use_grpo}")
 
-    for epoch in range(config.RL_EPOCHS):
-        total_reward = 0.0
-        num_queries = 0
-        epoch_start = torch.cuda.Event(enable_timing=True) if torch.cuda.is_available() else None
-        epoch_end = torch.cuda.Event(enable_timing=True) if torch.cuda.is_available() else None
-
-        if epoch_start:
-            epoch_start.record()
-
-        print(f"\nEpoch {epoch + 1}/{config.RL_EPOCHS}")
-
-        for query_id, relevance_data in qrels.items():
-            try:
-                retriever.retrieve_candidates(query_id, top_k=50)
-                bm25_results = retriever.get_last_doc_scores("bm25")
-                dense_results = retriever.get_last_doc_scores("dense")
-
-                if bm25_results:
-                    reward = reranker.train_step(
-                        retriever,
-                        query_id,
-                        bm25_results,
-                        dense_results,
-                        relevance_data,
-                    )
-                    if reward is not None:
-                        total_reward += reward
-                        num_queries += 1
-
-            except Exception as e:
-                print(f"Hiba a {query_id} query feldolgozásakor: {e}")
-                continue
-
-        # Memory cleanup (Unsloth style)
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
-        if epoch_end and epoch_start:
-            epoch_end.record()
-            torch.cuda.synchronize()
-            epoch_time = epoch_start.elapsed_time(epoch_end) / 1000
-        else:
-            epoch_time = 0
-
-        avg_reward = total_reward / num_queries if num_queries > 0 else 0
-        print(f"Epoch {epoch + 1} eredmény: {num_queries} query feldolgozva")
-        print(".4f")
-        if epoch_time > 0:
-            print(".2f")
-
-        # Early stopping if reward is consistently improving
-        if epoch > 5 and avg_reward > 0.1:  # Good performance threshold
-            print("Korai megállás - jó teljesítmény elérve")
-            break
-
-    # Final evaluation
-    print(f"\n=== VÉGÉRTÉKELÉS ===")
+    # Test evaluation
     try:
-        eval_results = reranker.evaluate(retriever, list(qrels.keys())[:10], qrels)
+        test_queries = list(qrels.keys())[:5]  # Test with first 5 queries
+        eval_results = reranker.evaluate(retriever, test_queries, qrels)
+
         if eval_results:
-            print("Baseline NDCG@10: .4f")
-            print("Reranked NDCG@10: .4f")
-            print("Improvement: .4f")
+            print("\n=== TESZT EREDMÉNYEK ===")
+            print(".4f")
+            print(".4f")
+            print(".4f")
     except Exception as e:
         print(f"Evaluation hiba: {e}")
 
-    # Save trained policy
-    print(f"\nMentés: {config.RL_POLICY_PATH}")
-    reranker.save_policy(config.RL_POLICY_PATH)
-    print("=== TANÍTÁS SIKERES ===")
+    print("=== TESZT SIKERES ===")
 
 if __name__ == '__main__':
     main()

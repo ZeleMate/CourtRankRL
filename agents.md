@@ -44,10 +44,26 @@ High‑Level Pipeline
 - Convert chunk IDs to document IDs consistently, keep per-source score features, output top-k list of Document IDs (baseline).
 
 5) RL Reranking (GRPO‑style)
-- Features per candidate: dense similarity, normalized BM25 score (pulled from cached bm25s scores), rank difference, token-length features, optionally simple metadata features.
-- Policy: linear or shallow MLP head; groupwise softmax over candidates.
-- Reward: nDCG@10 at group level; group‑relative reward versus the baseline.
-- Output: saved policy; reranked results; numeric comparison baseline vs rerank.
+- Candidate context: for every slate element collect chunk text (trimmed to config length), document metadata (court, domain, year), RRF/BM25/FAISS scores, and rank positions; surface these as structured JSON snippets embedded in the prompt alongside the Hungarian query.
+- Slate preparation: merge the top‑`k` BM25 and FAISS hits into a fixed-length slate per query, pad with neutral placeholders when necessary, and attach ground-truth relevance labels pulled from the qrels file.
+- Policy model: fine-tune `Qwen/Qwen3-4B-Instruct-2507` with QLoRA adapters (bf16 compute, 4-bit weights) so it can score slate items via autoregressive logits; groupwise softmax over candidate scores yields the reranking distribution.
+- Trainer: run Hugging Face TRL `GRPOTrainer` with group size matched to the slate length, KL penalty disabled, learning-rate warmup + gradient clipping, and per-step logging of Hungarian status messages; rewards are computed on-device from the provided relevance labels.
+- Reward shaping: evaluate nDCG@10 for both the baseline order and the policy’s sampled order, use their difference as the reward, clamp negative rewards when no relevant documents exist, and default to zero if the slate lacks annotations.
+- Regularization: apply entropy bonus and normalize rewards by the query-level variance (fallback 1.0) to keep QLoRA training stable on limited VRAM.
+- Outputs: save LoRA adapter weights and tokenizer configs under `data/models/grpo_policy/`, emit reranked identifier lists per query, and log baseline vs. reranked nDCG/MAP metrics to `data/models/grpo_policy/metrics.json`.
+
+GRPO Implementation Plan (TRL-based)
+- Environment setup: install/update `trl`, `transformers`, `peft`, and `bitsandbytes`; keep configs ready for CPU/MPS inference while enabling bf16 + 4bit QLoRA training on cloud GPUs without altering the CLI surface.
+- Data pipeline: reuse hybrid retrieval exports to materialize per-query candidate slates and save them as JSONL batches that the cloud GRPO notebook can ingest (IDs stay in sync with `chunks.jsonl` and qrels).
+- Model preparation: load `Qwen/Qwen3-4B-Instruct-2507` with `load_in_4bit=True`, attach QLoRA adapters (rank/alpha set in config), and register reward/eval prompts that stay within the model’s context window.
+- Cloud training notebook: create `notebooks/grpo_train_runpod.ipynb` that loads the slate JSONL, configures `GRPOTrainer` (group size = slate length, custom nDCG-based `reward_fn`), streams Hungarian progress logs, and checkpoints adapters into `/workspace/artifacts/grpo_policy/` for download.
+- Artifact handover: after cloud training, download the adapter weights, tokenizer files, and metrics JSON into `data/models/grpo_policy/` locally; commit to a deterministic filename schema for seamless loading.
+- Local inference integration: update `GRPOReranker` so it fetches the downloaded adapters, runs forward passes on CPU/MPS with low-memory settings, and gracefully falls back to baseline ordering if artifacts are missing.
+- Portability: document the Runpod workflow (environment variables, mixed-precision flags, artifact sync back to the repo) to ensure the same policy runs locally post-training.
+- Baseline compatibility: no changes required for ingestion, chunking, or hybrid retrieval modules (`src/data_loader/build_bm25_index.py`, `src/search/hybrid_search.py`); only the RL layer consumes the new artifacts.
+- CLI alignment: adapt `src/cli.py` so training invocations dispatch to the cloud notebook (artifact sync) and querying loads the LoRA adapters before reranking, while maintaining Hungarian console output.
+- Slate export: add a utility that serializes baseline candidate slates (chunk text + metadata + scores) into JSONL for GRPO training, ensuring chunk IDs stay aligned with qrels and FAISS mappings.
+- Qrels consistency: harmonize configuration (`configs/config.py`) with the canonical `data/qrels/baseline_qrels.tsv` path to avoid mismatched formats between CLI and notebook.
 
 BM25S Implementation Notes
 - Tokenization: rely on `bm25s.tokenize` with configurable stopword handling (default none for Hungarian); persist the returned token-id structures for reuse.
@@ -60,6 +76,12 @@ BM25S Implementation Notes
 - Embedding: Generate FAISS index using gemma_embedding_runpod.ipynb.
 - Query: embed → BM25+FAISS → fusion → top‑k ID list (optional RL rerank).
 - RL Train: load qrels → baseline candidates → features → GRPO training → save policy → evaluate.
+
+Relevance Judgments (Qrels)
+- Location: store in `data/qrels/baseline_qrels.tsv` and keep the filename stable for the RL training CLI.
+- Format: tab-separated with a header row `query_id\tchunk_id\trelevance`; use numeric `query_id` values, chunk identifiers that match `chunks.jsonl`, and relevance grades in {0,1,2}.
+- Coverage: provide at least 50 unique queries, each with three or more annotated chunks; ensure every relevant chunk references the same underlying document IDs used elsewhere in the pipeline.
+- Consistency: maintain UTF-8 encoding, no BOM, Unix newlines, and keep the file sorted first by `query_id`, then by descending `relevance` to simplify deterministic loading.
 
 Acceptance Criteria
 - Always use the full dataset for the final pipeline.
@@ -96,8 +118,5 @@ Language Policy
 - Query responses must return only Hungarian content where applicable; when returning identifiers, return IDs only as requested.
 
 Sources to implement GRPO based RL
-- https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide
-- https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide/tutorial-train-your-own-reasoning-model-with-grpo
-- https://github.com/wangqinsi1/GAINRL?tab=readme-ov-file
 - https://huggingface.co/learn/llm-course/en/chapter12/4
 - https://huggingface.co/docs/trl/main/en/grpo_trainer
