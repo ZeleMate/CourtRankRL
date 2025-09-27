@@ -34,7 +34,10 @@ PROCESSED_DOCS_LIST = PROCESSED_DATA_DIR / "processed_docs.jsonl"
 CHECKPOINT_PATH = PROCESSED_DATA_DIR / "preprocess_checkpoint.json"
 
 # Indexes
+BM25_INDEX_DIR = INDEX_DIR / "bm25"
 BM25_INDEX_PATH = INDEX_DIR / "bm25_index.json"
+BM25_STATS_PATH = BM25_INDEX_DIR / "bm25_stats.json"
+BM25_TOKEN_CACHE_DIR = BM25_INDEX_DIR / "token_cache"
 FAISS_INDEX_PATH = INDEX_DIR / "faiss_index.bin"
 CHUNK_ID_MAP_PATH = INDEX_DIR / "chunk_id_map.json"
 
@@ -46,27 +49,29 @@ BASELINE_RESULTS_DIR = DATA_DIR / "baseline_results"
 RERANKED_RESULTS_DIR = DATA_DIR / "reranked_results"
 
 # --- Model Configuration ---
-# Embedding model: Qwen3-Embedding-0.6B (Hugging Face)
-# Agents.md spec: Qwen3-Embedding-0.6B
-EMBEDDING_MODEL_TYPE = "qwen3"
+# Embedding model: google/embeddinggemma-300m (Hugging Face)
+# Agents.md spec: google/embeddinggemma-300m
+EMBEDDING_MODEL_TYPE = "embeddinggemma"
 
-# Qwen3 konfiguráció - RunPod 5090 GPU optimalizált
-QWEN3_MODEL_NAME = "Qwen/Qwen3-Embedding-0.6B"
-QWEN3_DIMENSION = 1024  # Qwen3-0.6B kimeneti dimenzió
+# EmbeddingGemma konfiguráció – lokális M3 optimalizált setup
+EMBEDDING_GEMMA_MODEL_NAME = "google/embeddinggemma-300m"
+EMBEDDING_GEMMA_DIMENSION = 768  # EmbeddingGemma-300m kimeneti dimenzió
 
 # Aktív embedding dimenzió
-EMBEDDING_DIMENSION = QWEN3_DIMENSION
+EMBEDDING_DIMENSION = EMBEDDING_GEMMA_DIMENSION
 
 # --- Retrieval Configuration ---
+# Lokális erőforrásokhoz optimalizált értékek
 TOP_K_BASELINE = 100
-TOP_K_RERANKED = 10
-RRF_K = 60  # Reciprocal Rank Fusion parameter
+TOP_K_RERANKED = 20
+RRF_K = 60
 
 # --- RL Configuration ---
+# Lokális training paraméterek
 RL_LEARNING_RATE = 1e-4
 RL_BATCH_SIZE = 32
-RL_EPOCHS = 10
-RL_HIDDEN_DIM = 64
+RL_EPOCHS = 15
+RL_HIDDEN_DIM = 96
 
 # --- BM25 Configuration ---
 BM25_K1 = 1.5
@@ -74,23 +79,24 @@ BM25_B = 0.75
 
 # --- Preprocess / IO batching ---
 # Hány sort írjunk ki egyben a JSONL-be, mielőtt ürítjük a memóriapuffert
+# Lokális disk I/O-hoz igazított batch méret
 CHUNK_WRITE_BATCH_SIZE = 200
 
 # --- Memory guard (soft limit, bytes) ---
-# RunPod 5090 GPU optimalizált (~20 GiB GPU memory)
-MEMORY_SOFT_LIMIT_BYTES = 20 * 1024 * 1024 * 1024
+# M3 MacBook Air soft limit (RAM)
+MEMORY_SOFT_LIMIT_BYTES = 12 * 1024 * 1024 * 1024
 
 # --- Embedding Configuration ---
-# RunPod 5090 GPU optimalizált (24GB VRAM)
-EMBEDDING_BATCH_SIZE = 128  # Teljes batch méret a 5090 GPU-hoz
-EMBEDDING_MAX_LENGTH = 1024  # Teljes token hossz
+# Lokális embedding paraméterek (MPS)
+EMBEDDING_BATCH_SIZE = 64
+EMBEDDING_MAX_LENGTH = 1024
 
 # --- FAISS IVF konfiguráció ---
-# Célszerű klaszterszám: nlist ~ sqrt(N). Határok és tréning mintakövetelmény.
+# FAISS IVF beállítások – kis korpusz
 FAISS_NLIST_MIN = 64
-FAISS_NLIST_MAX = 2048
-FAISS_TRAIN_POINTS_PER_CENTROID = 39  # FAISS heurisztika (~40 pont/centroid)
-FAISS_TRAIN_MAX_POINTS = 100_000  # tréning minták felső korlátja (RAM kontroll)
+FAISS_NLIST_MAX = 1024
+FAISS_TRAIN_POINTS_PER_CENTROID = 40
+FAISS_TRAIN_MAX_POINTS = 200_000
 
 # --- File Extensions (DOCX only) ---
 SUPPORTED_TEXT_EXTENSIONS = ['.docx', '.DOCX']
@@ -101,3 +107,10 @@ CLEANING_MIN_TEXT_LENGTH = 150  # Minimum karakterhossz, ami alatt a szöveget z
 # --- Minimal Logging ---
 LOGGING_LEVEL = logging.WARNING  # No logging as per spec
 LOGGING_FORMAT = '%(asctime)s - %(levelname)s - %(message)s'
+
+# --- BM25S specifikus beállítások ---
+BM25_USE_CACHE = True
+BM25_STOPWORDS = None
+BM25_USE_NUMBA = False
+BM25_THREADS = 0  # 0 → autonóm; -1 → összes core, >0 → fix érték
+BM25_TOP_K_CACHE = 200
