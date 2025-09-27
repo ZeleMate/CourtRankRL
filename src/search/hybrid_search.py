@@ -4,338 +4,395 @@ CourtRankRL Hybrid Retrieval Engine
 Agents.md specifikáció alapján implementálva.
 
 Főbb jellemzők:
-- Qwen3-Embedding-0.6B query embedding (Hugging Face)
-- BM25 sparse + FAISS dense retrieval
-- RRF vagy z-score weighted sum fusion
-- Zero variance kezelés z-score esetében
-- Output: top-k dokumentum azonosítók listája (határozat számok)
+- google/embeddinggemma-300m query embedding (HF, MPS támogatás)
+- BM25S sparse + FAISS dense retrieval token cache metaadatokkal
+- RRF vagy z-score weighted sum fusion (zero variance védelemmel)
+- Dokumentum- és chunk-szintű score aggregáció GRPO feature exporthoz
 """
 
 import json
-import numpy as np
-import faiss
 import sys
 from pathlib import Path
-from typing import List, Tuple
+from typing import Any, Dict, List, Optional, Tuple, cast
+
+import faiss
+import numpy as np
 import torch
+import torch.nn as nn
 from transformers import AutoModel, AutoTokenizer
 
-# Projekt gyökér hozzáadása az import úthoz
 project_root = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 from configs import config
 from src.data_loader.build_bm25_index import BM25Index
 
-# Mock classes for testing on 16GB RAM systems
-class MockQwenModel:
-    """Mock Qwen3 model for testing."""
-    def __init__(self):
-        self.config = type('Config', (), {'hidden_size': config.QWEN3_DIMENSION})()
-
-class MockTokenizer:
-    """Mock tokenizer for testing."""
-    def __call__(self, texts, return_tensors='pt', truncation=True, max_length=512, padding=True):
-        # Mock tokenization - return dummy tensors
-        batch_size = len(texts)
-        seq_len = max_length
-        return {
-            'input_ids': torch.zeros((batch_size, seq_len), dtype=torch.long),
-            'attention_mask': torch.ones((batch_size, seq_len), dtype=torch.long)
-        }
 
 class HybridRetriever:
-    """CourtRankRL hybrid retrieval engine."""
+    """CourtRankRL hybrid retrieval engine BM25S + FAISS integrációval."""
 
-    def __init__(self):
-        self.bm25 = None
+    def __init__(self) -> None:
+        self.device = self._detect_device()
+        self.model_name = config.EMBEDDING_GEMMA_MODEL_NAME
+        self.tokenizer: Optional[Any] = None
+        self.model: Optional[nn.Module] = None
+
+        self.bm25: Optional[BM25Index] = None
+        self.bm25_stats: Dict[str, float] = {}
         self.faiss_index = None
-        self.chunk_id_map = {}
-        self.tokenizer = None
-        self.model = None
-        self.model_name = None
+        self.chunk_id_map: Dict[str, str] = {}
+
+        # Lefutások közben tárolt részletes score-ok (GRPO feature export)
+        self.last_chunk_scores: Dict[str, List[Tuple[str, float]]] = {
+            "bm25": [],
+            "dense": [],
+        }
+        self.last_doc_scores: Dict[str, List[Tuple[str, float]]] = {
+            "bm25": [],
+            "dense": [],
+            "fused": [],
+        }
+
         self._load_models_and_indexes()
 
-    def _chunk_id_to_doc_id(self, chunk_id: str) -> str:
-        """Convert chunk_id to doc_id (document identifier/határozat szám)."""
-        # chunk_id format: "doc_id_src_tag_i" -> extract doc_id
-        return chunk_id.split('_')[0]
+    @staticmethod
+    def _chunk_id_to_doc_id(chunk_id: str) -> str:
+        return chunk_id.split("_")[0]
 
-    def _load_models_and_indexes(self):
-        """Load Qwen3 model and indexes."""
+    @staticmethod
+    def _detect_device() -> str:
+        if torch.cuda.is_available():
+            return "cuda"
+        if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+            return "mps"
+        return "cpu"
+
+    def _load_models_and_indexes(self) -> None:
         try:
-            # Load Qwen3 model for query embedding
-            self.model_name = config.QWEN3_MODEL_NAME
-            print(f"Qwen3 model betöltése: {self.model_name}")
-            self.tokenizer = AutoTokenizer.from_pretrained(
-                self.model_name, trust_remote_code=True
+            self._load_transformer_model()
+            self._load_bm25_index()
+            self._load_faiss_index()
+            self._load_chunk_id_map()
+        except Exception as exc:
+            print(f"❌ Hiba a komponensek betöltésekor: {exc}")
+            raise
+
+    def _load_transformer_model(self) -> None:
+        print(f"🔧 Modell betöltése ({self.device}) – {self.model_name}")
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(
+                    self.model_name,
+                    trust_remote_code=True,
+                cache_dir="/tmp/huggingface_cache",
             )
-            # RunPod 5090 GPU optimalizált model betöltés
-            print(f"🚀 RunPod 5090 GPU optimalizáció: {self.model_name}")
-            print("📱 GPU device keresése...")
+            self.tokenizer = tokenizer
 
-            # GPU/CUDA prioritás a RunPod-on
-            if torch.cuda.is_available():
-                device = "cuda"
-                gpu_count = torch.cuda.device_count()
-                gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3
-                print(f"🎯 CUDA GPU-k: {gpu_count}, Memory: {gpu_memory:.1f} GB")
+            model_kwargs: Dict[str, Any] = {
+                "trust_remote_code": True,
+                "low_cpu_mem_usage": True,
+            }
+            if self.device == "cuda":
+                model_kwargs.update(
+                    {
+                        "dtype": torch.float16,
+                        "device_map": "auto",
+                        "attn_implementation": "flash_attention_2",
+                    }
+                )
             else:
-                device = "cpu"
-                print("⚠️  CUDA nem elérhető, CPU használat")
-
-            try:
-                self.tokenizer = AutoTokenizer.from_pretrained(
-                    self.model_name, trust_remote_code=True
+                model_kwargs.update(
+                    {
+                        "dtype": torch.float32,
+                        "device_map": None,
+                        "attn_implementation": "eager",
+                    }
                 )
-                self.model = AutoModel.from_pretrained(
-                    self.model_name,
+
+            model = AutoModel.from_pretrained(self.model_name, **model_kwargs)
+            model_module = cast(nn.Module, model)
+            if self.device in {"cuda", "mps"}:
+                model_module = model_module.to(self.device)
+            model_module.eval()
+            self.model = model_module
+            print("✅ EmbeddingGemma modell betöltve")
+        except Exception as exc:
+            print(f"❌ EmbeddingGemma betöltési hiba: {exc}")
+            fallback = "sentence-transformers/all-MiniLM-L6-v2"
+            print(f"🔄 Tartalék modell: {fallback}")
+            self.model_name = fallback
+            tokenizer = AutoTokenizer.from_pretrained(
+                fallback,
                     trust_remote_code=True,
-                    torch_dtype=torch.float16,  # FP16 a memória optimalizáláshoz
-                    low_cpu_mem_usage=True
-                ).to(device)
-                self.model.eval()
-                print(f"✅ Qwen3 model betöltve: {self.model_name} (device: {device})")
+                cache_dir="/tmp/huggingface_cache",
+            )
+            self.tokenizer = tokenizer
+            model = AutoModel.from_pretrained(fallback, trust_remote_code=True)
+            model_module = cast(nn.Module, model)
+            if self.device in {"cuda", "mps"}:
+                model_module = model_module.to(self.device)
+            model_module.eval()
+            self.model = model_module
+            print("✅ Fallback modell betöltve")
 
-            except Exception as e:
-                print(f"❌ Model betöltés sikertelen: {e}")
-                # Fallback: kisebb model
-                print("🔄 Fallback: sentence-transformers/all-MiniLM-L6-v2")
-                self.model_name = "sentence-transformers/all-MiniLM-L6-v2"
-                self.tokenizer = AutoTokenizer.from_pretrained(
-                    self.model_name, trust_remote_code=True
-                )
-                self.model = AutoModel.from_pretrained(
-                    self.model_name,
-                    trust_remote_code=True,
-                    torch_dtype=torch.float16
-                ).to(device)
-                self.model.eval()
-                print(f"✅ Fallback model betöltve: {self.model_name}")
+    def _load_bm25_index(self) -> None:
+        if not config.BM25_INDEX_PATH.exists():
+            print("⚠️  BM25 index nem található")
+            return
 
-            # Load BM25 - RunPod 5090 GPU optimalizált
-            if config.BM25_INDEX_PATH.exists():
-                print("🔍 BM25 index betöltése...")
-                self.bm25 = BM25Index.load(config.BM25_INDEX_PATH)
-                print(f"✅ BM25 index betöltve: {self.bm25.total_docs} dokumentum")
+        self.bm25 = BM25Index.load(config.BM25_INDEX_PATH)
+        if not self.bm25:
+            print("⚠️  BM25 index betöltése sikertelen")
+            return
 
-            # Load FAISS
-            if config.FAISS_INDEX_PATH.exists():
-                self.faiss_index = faiss.read_index(str(config.FAISS_INDEX_PATH))
-                print(f"FAISS index betöltve: {self.faiss_index.ntotal} vektor")
+        self.bm25_stats = {
+            "avg_doc_length": getattr(self.bm25, "avg_doc_length", 0.0),
+            "total_docs": getattr(self.bm25, "total_docs", 0),
+        }
+        print(f"✅ BM25 index betöltve ({self.bm25.total_docs} dokumentum)")
 
-                # Load chunk ID mapping
-                if config.CHUNK_ID_MAP_PATH.exists():
-                    with open(config.CHUNK_ID_MAP_PATH, 'r', encoding='utf-8') as f:
-                        self.chunk_id_map = json.load(f)
+    def _load_faiss_index(self) -> None:
+        if not config.FAISS_INDEX_PATH.exists():
+            print("ℹ️  FAISS index nem található, csak BM25 fog futni")
+            return
 
-        except Exception as e:
-            print(f"Hiba a modellek/indexek betöltésekor: {e}")
+        try:
+            index = faiss.read_index(str(config.FAISS_INDEX_PATH))
+            gpu_res_cls = getattr(faiss, "StandardGpuResources", None)
+            if self.device == "cuda" and callable(gpu_res_cls):
+                res = gpu_res_cls()  # type: ignore[call-arg]
+                index = faiss.index_cpu_to_gpu(res, 0, index)  # type: ignore[attr-defined]
+                print("🎯 FAISS GPU mód aktiválva")
+            else:
+                print("ℹ️  FAISS CPU/MPS módban fut")
+            self.faiss_index = index
+            print(f"✅ FAISS index betöltve ({self.faiss_index.ntotal} vektor)")
+        except Exception as exc:
+            print(f"⚠️  FAISS betöltési hiba: {exc}")
+
+    def _load_chunk_id_map(self) -> None:
+        if not config.CHUNK_ID_MAP_PATH.exists():
+            return
+        try:
+            with open(config.CHUNK_ID_MAP_PATH, "r", encoding="utf-8") as handle:
+                self.chunk_id_map = json.load(handle)
+            print(f"🔗 Chunk ID mapping betöltve ({len(self.chunk_id_map)} elem)")
+        except Exception as exc:
+            print(f"⚠️  Chunk ID mapping betöltési hiba: {exc}")
 
     def _embed_query(self, query: str) -> np.ndarray:
-        """Embed query using Qwen3 (agents.md spec)."""
         if not self.tokenizer or not self.model:
-            raise ValueError("Qwen3 model nincs betöltve")
+            raise ValueError("Nincs betöltött embedding modell")
 
         try:
-            # RunPod 5090 GPU optimalizált embedding
-            print(f"📝 Query embedding: {query}")
+            tokenizer = self.tokenizer
+            model = self.model
+            if tokenizer is None or model is None:
+                raise ValueError("Nincs betöltött tokenizer vagy modell")
 
-            inputs = self.tokenizer(
+            inputs = tokenizer(
                 query,
                 return_tensors="pt",
                 truncation=True,
                 max_length=config.EMBEDDING_MAX_LENGTH,
-                padding=True
+                padding=True,
+                return_attention_mask=True,
             )
 
-            device = next(self.model.parameters()).device
-            inputs = {k: v.to(device) for k, v in inputs.items()}
+            model_device = next(model.parameters()).device
+            inputs = {k: v.to(model_device, non_blocking=True) for k, v in inputs.items()}
 
             with torch.no_grad():
-                outputs = self.model(**inputs)
-                if hasattr(outputs, 'last_hidden_state'):
-                    embedding = outputs.last_hidden_state[:, 0, :].float()
-                else:
-                    embedding = outputs.pooler_output.float()
+                outputs = model(**inputs)
 
-                # CPU-ra másolás csak ha szükséges
-                if device != 'cpu':
+                if hasattr(outputs, "last_hidden_state"):
+                    embedding = outputs.last_hidden_state[:, 0, :].float()
+                elif hasattr(outputs, "pooler_output"):
+                    embedding = outputs.pooler_output.float()
+                else:
+                    embedding = torch.mean(outputs.last_hidden_state, dim=1).float()
+
+                if model_device.type != "cpu":
                     embedding = embedding.cpu()
 
-                embedding = embedding.numpy()
+                embedding = embedding.numpy().astype(np.float32)
 
-            # L2-normalizálás IP metrika számára (agents.md spec)
-            embedding = embedding.astype(np.float32)
             norm = np.linalg.norm(embedding)
             if norm == 0:
                 norm = 1.0
-            embedding = embedding / norm
-            return embedding
+            return embedding / norm
+        except Exception as exc:
+            raise ValueError(f"Lekérdezés embedding hiba: {exc}")
 
-        except Exception as e:
-            raise ValueError(f"Qwen3 embedding hiba: {e}")
+    def _aggregate_by_doc(
+        self, chunk_scores: List[Tuple[str, float]]
+    ) -> Tuple[List[Tuple[str, float]], Dict[str, List[Tuple[str, float]]]]:
+        doc_scores: Dict[str, float] = {}
+        doc_chunks: Dict[str, List[Tuple[str, float]]] = {}
 
-    def retrieve_candidates(self, query: str, top_k: int = 100) -> Tuple[List[Tuple[str, float]], List[Tuple[str, float]]]:
-        """Retrieve candidates from BM25 and FAISS."""
-        bm25_results = []
-        dense_results = []
+        for chunk_id, score in chunk_scores:
+            doc_id = self._chunk_id_to_doc_id(chunk_id)
+            doc_chunks.setdefault(doc_id, []).append((chunk_id, score))
+            if doc_id not in doc_scores or score > doc_scores[doc_id]:
+                doc_scores[doc_id] = score
 
-        # BM25 retrieval - convert chunk_id to doc_id
+        ranked_docs = sorted(doc_scores.items(), key=lambda item: item[1], reverse=True)
+        return ranked_docs, doc_chunks
+
+    def retrieve_candidates(
+        self, query: str, top_k: int = 100
+    ) -> Tuple[List[Tuple[str, float]], List[Tuple[str, float]]]:
+        bm25_results: List[Tuple[str, float]] = []
+        dense_results: List[Tuple[str, float]] = []
+
         if self.bm25:
-            chunk_results = self.bm25.search(query, top_k=top_k)
-            # Group by doc_id and keep max score
-            doc_scores = {}
-            for chunk_id, score in chunk_results:
-                doc_id = self._chunk_id_to_doc_id(chunk_id)
-                if doc_id not in doc_scores or score > doc_scores[doc_id]:
-                    doc_scores[doc_id] = score
-            bm25_results = list(doc_scores.items())
+            chunk_hits = self.bm25.search(query, top_k=top_k)
+            bm25_results, bm25_chunks = self._aggregate_by_doc(chunk_hits)
+            self.last_chunk_scores["bm25"] = chunk_hits
+            self.last_doc_scores["bm25"] = bm25_results
+            self.bm25_chunk_groups = bm25_chunks
+        else:
+            self.last_chunk_scores["bm25"] = []
+            self.last_doc_scores["bm25"] = []
 
-        # Dense retrieval - convert chunk_id to doc_id
         if self.faiss_index and self.chunk_id_map:
             try:
-                query_embedding = self._embed_query(query)
-                distances, indices = self.faiss_index.search(
-                    np.array([query_embedding]), top_k
-                )
-
-                # Group by doc_id and keep max score
-                doc_scores = {}
+                query_emb = self._embed_query(query)
+                distances, indices = self.faiss_index.search(np.array([query_emb]), top_k)
+                dense_chunks: List[Tuple[str, float]] = []
                 for distance, idx in zip(distances[0], indices[0]):
-                    if idx != -1:
-                        chunk_id = self.chunk_id_map.get(str(idx))
-                        if chunk_id:
-                            doc_id = self._chunk_id_to_doc_id(chunk_id)
-                            score = distance  # FAISS IP returns similarity directly
-                            if doc_id not in doc_scores or score > doc_scores[doc_id]:
-                                doc_scores[doc_id] = score
-                dense_results = list(doc_scores.items())
+                    if idx == -1:
+                        continue
+                    chunk_id = self.chunk_id_map.get(str(idx))
+                    if not chunk_id:
+                        continue
+                    dense_chunks.append((chunk_id, float(distance)))
 
-            except Exception as e:
-                print(f"Dense retrieval hiba: {e}")
+                dense_results, dense_groups = self._aggregate_by_doc(dense_chunks)
+                self.last_chunk_scores["dense"] = dense_chunks
+                self.last_doc_scores["dense"] = dense_results
+                self.dense_chunk_groups = dense_groups
+            except Exception as exc:
+                print(f"Dense retrieval hiba: {exc}")
+        else:
+            self.last_chunk_scores["dense"] = []
+            self.last_doc_scores["dense"] = []
 
         return bm25_results, dense_results
 
-    def fuse_results(self, bm25_results: List[Tuple[str, float]],
-                    dense_results: List[Tuple[str, float]],
-                    method: str = "rrf") -> List[Tuple[str, float]]:
-        """
-        Fuse BM25 and dense results using RRF or z-score weighted sum.
-        Handles zero variance for z-score method.
-        """
-        if method == "rrf":
-            return self._fuse_rrf(bm25_results, dense_results)
-        elif method == "zscore":
-            return self._fuse_zscore(bm25_results, dense_results)
-        else:
-            raise ValueError("Ismeretlen fusion method: használj 'rrf' vagy 'zscore'")
-
-    def _fuse_rrf(self, bm25_results: List[Tuple[str, float]],
-                 dense_results: List[Tuple[str, float]], k: int = 60) -> List[Tuple[str, float]]:
-        """Reciprocal Rank Fusion."""
-        rrf_scores = {}
-
-        # Create ranking dictionaries
-        bm25_ranks = {chunk_id: rank for rank, (chunk_id, _) in enumerate(bm25_results, 1)}
-        dense_ranks = {chunk_id: rank for rank, (chunk_id, _) in enumerate(dense_results, 1)}
-
-        # All unique chunk IDs
-        all_chunks = set(bm25_ranks.keys()) | set(dense_ranks.keys())
-
-        for chunk_id in all_chunks:
-            rrf_score = 0.0
-            if chunk_id in bm25_ranks:
-                rrf_score += 1.0 / (k + bm25_ranks[chunk_id])
-            if chunk_id in dense_ranks:
-                rrf_score += 1.0 / (k + dense_ranks[chunk_id])
-            rrf_scores[chunk_id] = rrf_score
-
-        return sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
-
-    def _fuse_zscore(self, bm25_results: List[Tuple[str, float]],
-                    dense_results: List[Tuple[str, float]]) -> List[Tuple[str, float]]:
-        """Z-score weighted sum with zero variance handling."""
-        # Create score dictionaries
-        bm25_scores = dict(bm25_results)
-        dense_scores = dict(dense_results)
-
-        # All unique chunk IDs
-        all_chunks = set(bm25_scores.keys()) | set(dense_scores.keys())
-
-        # Calculate z-scores for each method (handle zero variance)
-        bm25_zscores = self._calculate_zscores(list(bm25_scores.values()))
-        dense_zscores = self._calculate_zscores(list(dense_scores.values()))
-
-        bm25_zscore_map = dict(zip(bm25_scores.keys(), bm25_zscores))
-        dense_zscore_map = dict(zip(dense_scores.keys(), dense_zscores))
-
-        # Weighted sum of z-scores
-        fused_scores = {}
-        for chunk_id in all_chunks:
-            bm25_z = bm25_zscore_map.get(chunk_id, 0.0)
-            dense_z = dense_zscore_map.get(chunk_id, 0.0)
-            fused_scores[chunk_id] = bm25_z + dense_z
-
-        return sorted(fused_scores.items(), key=lambda x: x[1], reverse=True)
-
-    def _calculate_zscores(self, scores: List[float]) -> List[float]:
-        """Calculate z-scores with zero variance handling."""
+    @staticmethod
+    def _calculate_zscores(scores: List[float]) -> List[float]:
         if not scores:
             return []
-
-        mean_score = np.mean(scores)
-        std_score = np.std(scores)
-
-        # Handle zero variance (agents.md spec)
+        mean_score = float(np.mean(scores))
+        std_score = float(np.std(scores))
         if std_score == 0:
-            # If all scores are the same, return zeros
             return [0.0] * len(scores)
+        return [float((score - mean_score) / std_score) for score in scores]
 
-        return [(score - mean_score) / std_score for score in scores]
+    def _fuse_rrf(
+        self,
+        bm25_results: List[Tuple[str, float]],
+        dense_results: List[Tuple[str, float]],
+        k: int = config.RRF_K,
+    ) -> List[Tuple[str, float]]:
+        rrf_scores: Dict[str, float] = {}
+        bm25_ranks = {doc_id: rank for rank, (doc_id, _) in enumerate(bm25_results, start=1)}
+        dense_ranks = {doc_id: rank for rank, (doc_id, _) in enumerate(dense_results, start=1)}
+        all_docs = set(bm25_ranks.keys()) | set(dense_ranks.keys())
+
+        for doc_id in all_docs:
+            score = 0.0
+            if doc_id in bm25_ranks:
+                score += 1.0 / (k + bm25_ranks[doc_id])
+            if doc_id in dense_ranks:
+                score += 1.0 / (k + dense_ranks[doc_id])
+            rrf_scores[doc_id] = score
+
+        return sorted(rrf_scores.items(), key=lambda item: item[1], reverse=True)
+
+    def _fuse_zscore(
+        self,
+        bm25_results: List[Tuple[str, float]],
+        dense_results: List[Tuple[str, float]],
+    ) -> List[Tuple[str, float]]:
+        bm25_scores = dict(bm25_results)
+        dense_scores = dict(dense_results)
+        all_docs = set(bm25_scores.keys()) | set(dense_scores.keys())
+
+        bm25_z = dict(zip(bm25_scores.keys(), self._calculate_zscores(list(bm25_scores.values()))))
+        dense_z = dict(zip(dense_scores.keys(), self._calculate_zscores(list(dense_scores.values()))))
+
+        fused: Dict[str, float] = {}
+        for doc_id in all_docs:
+            score = bm25_z.get(doc_id, 0.0) + dense_z.get(doc_id, 0.0)
+            fused[doc_id] = float(score)
+
+        return sorted(fused.items(), key=lambda item: item[1], reverse=True)
+
+    def fuse_results(
+        self,
+        bm25_results: List[Tuple[str, float]],
+        dense_results: List[Tuple[str, float]],
+        method: str = "rrf",
+    ) -> List[Tuple[str, float]]:
+        if method == "rrf":
+            fused = self._fuse_rrf(bm25_results, dense_results)
+        elif method == "zscore":
+            fused = self._fuse_zscore(bm25_results, dense_results)
+        else:
+            raise ValueError("Ismeretlen fusion metódus: használj 'rrf' vagy 'zscore' értéket")
+
+        self.last_doc_scores["fused"] = fused
+        return fused
 
     def retrieve(self, query: str, top_k: int = 10, fusion_method: str = "rrf") -> List[str]:
-        """
-        Main retrieval method: get candidates -> fuse -> return top_k document IDs.
-        Output: top-k list of document IDs (határozat számok) based on retrieved chunks.
-        """
         if not self.bm25 and not self.faiss_index:
-            print("Figyelem: Nincs index betöltve")
+            print("Figyelem: Nincs elérhető index")
             return []
 
-        # Get candidates from both methods (already converted to doc_ids)
-        bm25_results, dense_results = self.retrieve_candidates(query, top_k=top_k*2)
+        bm25_results, dense_results = self.retrieve_candidates(query, top_k=config.TOP_K_BASELINE)
+        fused = self.fuse_results(bm25_results, dense_results, method=fusion_method)
+        top_docs = [doc_id for doc_id, _ in fused[:top_k]]
+        return top_docs
 
-        # Fuse results
-        fused_results = self.fuse_results(bm25_results, dense_results, method=fusion_method)
+    # Segédfüggvények GRPO feature exporthoz
+    def get_last_doc_scores(self, source: str) -> List[Tuple[str, float]]:
+        return list(self.last_doc_scores.get(source, []))
 
-        # Return document IDs (határozat számok)
-        doc_ids = [doc_id for doc_id, _ in fused_results[:top_k]]
-        return doc_ids
+    def get_last_chunk_scores(self, source: str) -> List[Tuple[str, float]]:
+        return list(self.last_chunk_scores.get(source, []))
 
-def main():
-    """CourtRankRL hybrid retrieval teszt - dokumentum azonosítók visszaadása."""
+
+def main() -> None:
     import argparse
 
-    parser = argparse.ArgumentParser(description='CourtRankRL Hybrid Retrieval - Dokumentum azonosítók')
-    parser.add_argument('--query', type=str, default='családi jogi ügy',
-                       help='Keresési lekérdezés')
-    parser.add_argument('--top-k', type=int, default=10,
-                       help='Visszaadandó dokumentumok száma')
-    parser.add_argument('--fusion-method', type=str, default='rrf', choices=['rrf', 'zscore'],
-                       help='Fusion method: rrf vagy zscore')
+    parser = argparse.ArgumentParser(description="CourtRankRL hibrid kereső")
+    parser.add_argument("--query", type=str, default="családi jogi ügy", help="Lekérdezés")
+    parser.add_argument("--top-k", type=int, default=config.TOP_K_RERANKED, help="Visszaadandó dokumentumok száma")
+    parser.add_argument(
+        "--fusion-method",
+        type=str,
+        default="rrf",
+        choices=["rrf", "zscore"],
+        help="Fusion metódus",
+    )
+    parser.add_argument("--show-device", action="store_true", help="Eszközinformáció megjelenítése")
 
     args = parser.parse_args()
 
     retriever = HybridRetriever()
+    if args.show_device:
+        print(f"🔌 Eszköz: {retriever.device}")
+        print(f"📊 BM25 dokumentumok: {retriever.bm25_stats.get('total_docs', 0)}")
 
-    results = retriever.retrieve(args.query, top_k=args.top_k, fusion_method=args.fusion_method)
+    doc_ids = retriever.retrieve(args.query, top_k=args.top_k, fusion_method=args.fusion_method)
 
-    print(f"Lekérdezés: {args.query}")
-    print(f"Fusion method: {args.fusion_method}")
-    print(f"Top-{args.top_k} dokumentum azonosító:")
-    for i, doc_id in enumerate(results, 1):
-        print(f"{i}. {doc_id}")
+    print(f"🔍 Lekérdezés: {args.query}")
+    print(f"⚙️  Fusion: {args.fusion_method}")
+    print("📋 Eredmények:")
+    for idx, doc_id in enumerate(doc_ids, start=1):
+        print(f"{idx}. {doc_id}")
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()
