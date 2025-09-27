@@ -78,7 +78,7 @@ A projekt **100%-ban kompatibilis** RunPod cloud GPU-kkal:
   - Kimenet: `data/index/bm25_index.json`.
 
 3) Embedding generálás (kötelező):
-- Használja a `notebooks/qwen_embedding_runpod.ipynb` notebookot
+- Használja a `notebooks/gemma_embedding_runpod.ipynb` notebookot
   - Bemenet: `data/processed/chunks.jsonl`
   - Kimenetek: `data/index/faiss_index.bin`, `data/index/chunk_id_map.json`.
 
@@ -92,13 +92,13 @@ A projekt **100%-ban kompatibilis** RunPod cloud GPU-kkal:
   - `uv run courtrankrl query "kártérítés szivattyú ügy" --rerank`
   - Kimenet: GRPO-val újrarangsorolt dokumentum azonosítók.
 
-**Fontos:** A lekérdezés előtt futtassa a `qwen_embedding_runpod.ipynb` notebookot az embeddingek és FAISS index generálásához.
+**Fontos:** A lekérdezés előtt futtassa a `gemma_embedding_runpod.ipynb` notebookot az embeddingek és FAISS index generálásához.
 
 Tippek
-- A hibrid visszakeresés Qwen3-Embedding-0.6B modellt használja a lekérdezés embeddelésére.
-- A Qwen3 használatához GPU/MPS szükséges (M3 MacBook Air optimalizálva).
-- A query embedding real-time történik a betöltött Qwen3 modellel.
-- A Qwen3 model csak akkor töltődik be, ha van FAISS index.
+- A hibrid visszakeresés google/embeddinggemma-300m modellt használja a lekérdezés embeddelésére.
+- A EmbeddingGemma használatához GPU/MPS szükséges (M3 MacBook Air optimalizálva).
+- A query embedding real-time történik a betöltött EmbeddingGemma modellel.
+- A EmbeddingGemma model csak akkor töltődik be, ha van FAISS index.
 - M3 MacBook Air: MPS (Metal Performance Shaders) használata a GPU gyorsításhoz.
 
 ## RL újrarangsorolás (opcionális PoC)
@@ -112,23 +112,23 @@ Tippek
 
 - Chunks: `data/processed/chunks.jsonl`
 - BM25 index: `data/index/bm25_index.json`
-- FAISS index: `data/index/faiss_index.bin` (generálva `qwen_embedding_runpod.ipynb`-ban)
-- FAISS ID‑map: `data/index/chunk_id_map.json` (generálva `qwen_embedding_runpod.ipynb`-ban)
+- FAISS index: `data/index/faiss_index.bin` (generálva `gemma_embedding_runpod.ipynb`-ban)
+- FAISS ID‑map: `data/index/chunk_id_map.json` (generálva `gemma_embedding_runpod.ipynb`-ban)
 - RL policy: `data/models/rl_policy.pth`
 
 ## Konfiguráció (részletek a `configs/config.py` fájlban)
 
 - Chunkolás: méret, átfedés, per‑dokumentum limit.
 - BM25: `BM25_K1`, `BM25_B`.
-- Qwen3: `QWEN3_MODEL_NAME`, `QWEN3_DIMENSION`.
+- EmbeddingGemma: `EMBEDDING_GEMMA_MODEL_NAME`, `EMBEDDING_GEMMA_DIMENSION`.
 - Hybrid: `TOP_K_BASELINE`, `RRF_K`.
 - RL: tanulási ráta, epochok, batch méret, rejtett dimenzió.
 
 ## Hibaelhárítás
 
-- FAISS index hiányzik: futtassa a `qwen_embedding_runpod.ipynb` notebookot az embeddingek generálásához.
+- FAISS index hiányzik: futtassa a `gemma_embedding_runpod.ipynb` notebookot az embeddingek generálásához.
 - Memória: növeld fokozatosan a batch méretet; OOM esetén csökkentse a batch size-ot.
-- GPU: a Qwen3 embedding generáláshoz GPU szükséges.
+- GPU: a EmbeddingGemma embedding generáláshoz GPU szükséges.
 
 ## Nyelvi irányelv
 

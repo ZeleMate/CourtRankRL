@@ -27,6 +27,8 @@ dependencies = [
     "sentence-transformers",
     "transformers",
     "accelerate",
+    "bm25s",
+    "huggingface_hub",
 ]
 
 [build-system]
