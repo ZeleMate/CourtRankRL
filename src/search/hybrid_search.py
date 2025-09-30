@@ -44,6 +44,9 @@ class HybridRetriever:
         self.doc_id_map: Dict[str, str] = {}
         self.chunk_to_doc: Dict[str, str] = {}
         self.known_chunk_ids: Set[str] = set()
+        
+        # Chunk metadata (agents.md: court, domain, year for GRPO)
+        self.chunk_metadata: Dict[str, Dict[str, Any]] = {}
 
         # Lefutások közben tárolt részletes score-ok (GRPO feature export)
         self.last_chunk_scores: Dict[str, List[Tuple[str, float]]] = {
@@ -222,6 +225,28 @@ class HybridRetriever:
                 print(f"🗂️  Doc ID mapping betöltve ({len(self.doc_id_map)} elem)")
             except Exception as exc:
                 print(f"⚠️  Doc ID mapping betöltési hiba: {exc}")
+        
+        # Chunks metadata betöltése (agents.md: court, domain, year for GRPO)
+        chunks_path = getattr(config, "CHUNKS_JSONL", None)
+        if chunks_path and Path(chunks_path).exists():
+            try:
+                self.chunk_metadata = {}
+                with open(chunks_path, "r", encoding="utf-8") as handle:
+                    for line in handle:
+                        if line.strip():
+                            chunk = json.loads(line)
+                            chunk_id = chunk.get("chunk_id", "")
+                            if chunk_id:
+                                self.chunk_metadata[chunk_id] = {
+                                    "doc_id": chunk.get("doc_id", ""),
+                                    "court": chunk.get("court", ""),
+                                    "domain": chunk.get("domain", ""),
+                                    "year": chunk.get("year", ""),
+                                    "text": chunk.get("text", ""),
+                                }
+                print(f"📋 Chunk metadata betöltve ({len(self.chunk_metadata)} chunk)")
+            except Exception as exc:
+                print(f"⚠️  Chunk metadata betöltési hiba: {exc}")
 
     def _embed_query(self, query: str) -> np.ndarray:
         if not self.tokenizer or not self.model:
@@ -285,7 +310,7 @@ class HybridRetriever:
         return ranked_docs, doc_chunks
 
     def retrieve_candidates(
-        self, query: str, top_k: int = 20
+        self, query: str, top_k: int = 10
     ) -> Tuple[List[Tuple[str, float]], List[Tuple[str, float]]]:
         bm25_results: List[Tuple[str, float]] = []
         dense_results: List[Tuple[str, float]] = []
@@ -409,6 +434,22 @@ class HybridRetriever:
 
     def get_last_chunk_scores(self, source: str) -> List[Tuple[str, float]]:
         return list(self.last_chunk_scores.get(source, []))
+    
+    def get_doc_metadata(self, doc_id: str) -> Dict[str, Any]:
+        """
+        Visszaadja a dokumentum metaadatait (court, domain, year) a chunks-ból.
+        Agents.md: GRPO-nak szüksége van ezekre az adatokra.
+        """
+        # Első chunk keresése a doc_id-hoz
+        for chunk_id, metadata in self.chunk_metadata.items():
+            if metadata.get("doc_id") == doc_id:
+                return {
+                    "court": metadata.get("court", ""),
+                    "domain": metadata.get("domain", ""),
+                    "year": metadata.get("year", ""),
+                    "text": metadata.get("text", "")[:500],  # első 500 karakter
+                }
+        return {"court": "", "domain": "", "year": "", "text": ""}
 
 
 def main() -> None:

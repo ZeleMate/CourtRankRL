@@ -78,21 +78,63 @@ def extract_metadata_from_path(filepath: Path) -> Dict[str, str]:
     }
 
 
-def extract_metadata_from_docling_text(text: str) -> Dict[str, str]:
+def extract_metadata_from_docling_text(text: str, max_lines: int = 30) -> Dict[str, str]:
+    """
+    Metadata kinyerése a dokumentum szövegéből.
+    
+    Args:
+        text: A dokumentum szövege
+        max_lines: Maximum hány sort vizsgáljon (default: 30)
+    """
     import re
 
     court = ""
     case_id = ""
-    lines = text.split('\n')[:15]
+    lines = text.split('\n')[:max_lines]
 
     court_patterns = [
         r'([A-ZÁÉÍÓÖŐÚÜŰ][a-záéíóöőúüű]+(?:\s+[A-ZÁÉÍÓÖŐÚÜŰ][a-záéíóöőúüű]+)*\s*(?:[Íí]télőtábla|[Tt]örvényszék|[Jj]árásbíróság|[Kk]özigazgatási\s+[és\s+]*[Mm]unkaügyi\s+[Bb]íróság))',
         r'([A-ZÁÉÍÓÖŐÚÜŰ][a-záéíóöőúüű]+\s+[A-ZÁÉÍÓÖŐÚÜŰ][a-záéíóöőúüű]+\s*[Bb]íróság)',
     ]
     case_patterns = [
-        r'(Bf\.[IVXLCDM]+\.\d+/\d+/\d+\.?\s+szám)',
-        r'(\d+\.[A-Z]\.\d+/\d+/\d+\.?\s+szám)',
-        r'([A-Z]\.\d+\.\d+/\d+/\d+\.?\s+szám)',
+        # === 1. TÖRVÉNYSZÉKI FORMÁTUMOK (pl. 5.G.20.033/2023) ===
+        r'(\d+\.[A-Z]{1,3}\.\d+\.\d+/\d{4}\.?\s+szám)',
+        r'(\d+\.[A-Z]{1,3}\.\d+\.\d+/\d{4})',
+        
+        # === 2. JÁRÁSBÍRÓSÁGI FORMÁTUMOK (pl. 14.B.105/2021/136) ===
+        r'(\d+\.[A-Z]{1,3}\.\d+/\d{4}/\d+\.?\s+szám)',
+        r'(\d+\.[A-Z]{1,3}\.\d+/\d{4}/\d+)',
+        
+        # === 3. TÖBBBETŰS KÓDOK (pl. 14.BPK.694/2020/4, 16.FK.43/2016/12) ===
+        r'(\d+\.[A-Z][a-z]{1,3}\.\d+/\d{4}/\d+\.?\s+szám)',
+        r'(\d+\.[A-Z][a-z]{1,3}\.\d+/\d{4}/\d+)',
+        
+        # === 4. RÓMAI SZÁMOS FORMÁTUMOK (pl. Bf.II.123/2020/5) ===
+        r'(Bf\.[IVXLCDM]+\.\d+/\d{4}/\d+\.?\s+szám)',
+        r'(Bf\.[IVXLCDM]+\.\d+/\d{4}/\d+)',
+        
+        # === 5. P-BETŰS FORMÁTUMOK ===
+        # P kezdetű egyszerű (pl. P.20.126/2023/5)
+        r'(P\.\d+\.\d+/\d{4}/\d+\.?\s+szám)',
+        r'(P\.\d+\.\d+/\d{4}/\d+)',
+        # Szám + P kezdetű (pl. 6.P.20.126/2023/5)
+        r'(\d+\.P\.\d+\.\d+/\d{4}/\d+\.?\s+szám)',
+        r'(\d+\.P\.\d+\.\d+/\d{4}/\d+)',
+        
+        # === 6. FELLEBBVITELI FORMÁTUMOK (Kfv, Pfv, Kfv) ===
+        r'([KPk][fF][vV][\._]\d+[\._]\d+/\d{4}/\d+\.?\s+szám)',
+        r'([KPk][fF][vV][\._]\d+[\._]\d+/\d{4}/\d+)',
+        
+        # === 7. SPECIÁLIS KÓDOK (Are, Fk, Bk, stb.) ===
+        r'([A-Z][a-z]{1,2}[\._]\d+[\._]\d+/\d{4}/\d+\.?\s+szám)',
+        r'([A-Z][a-z]{1,2}[\._]\d+[\._]\d+/\d{4}/\d+)',
+        
+        # === 8. RÉGEBBI/ÁLTALÁNOS FORMÁTUMOK (fallback) ===
+        # Egyetlen nagybetű kód (régi stílus)
+        r'(\d+\.[A-Z]\.\d+/\d{4}/\d+\.?\s+szám)',
+        r'(\d+\.[A-Z]\.\d+/\d{4}/\d+)',
+        r'([A-Z]\.\d+\.\d+/\d{4}/\d+\.?\s+szám)',
+        r'([A-Z]\.\d+\.\d+/\d{4}/\d+)',
     ]
 
     for line in lines:
@@ -114,7 +156,22 @@ def extract_metadata_from_docling_text(text: str) -> Dict[str, str]:
         if court and case_id:
             break
 
-    return {'court': court, 'doc_id': case_id}
+    # Year és domain kinyerése az ügyszámból ha lehetséges
+    year = ""
+    domain = ""
+    if case_id:
+        import re
+        # Év kinyerése (pl. 2023 a P.20.126/2023/5 -ből)
+        year_match = re.search(r'/(\d{4})/', case_id)
+        if year_match:
+            year = year_match.group(1)
+        
+        # Domain kinyerése (K, Pf, Kfv, Are, stb.)
+        domain_match = re.match(r'^(\d+[-_])?([A-Za-z]+)', case_id)
+        if domain_match:
+            domain = domain_match.group(2).upper()
+    
+    return {'court': court, 'doc_id': case_id, 'year': year, 'domain': domain}
 
 
 def iter_docling_chunks(docling_document: DoclingDocument) -> Iterator[Dict[str, object]]:
@@ -220,6 +277,7 @@ def process_single_file_worker(filepath_str: str, raw_root_str: str, tmp_dir_str
     try:
         docling_doc = process_document_with_docling(filepath)
         if docling_doc is None:
+            print(f"Figyelmeztetés: Docling nem tudta feldolgozni: {filepath.name}")
             return None
 
         path_meta = extract_metadata_from_path(filepath)
@@ -251,12 +309,19 @@ def process_single_file_worker(filepath_str: str, raw_root_str: str, tmp_dir_str
                 break
 
         if pre_text_parts:
-            preview = minimal_normalize_text('\n'.join(pre_text_parts[:5]))
+            # Bővebb preview a jobb felismeréshez
+            preview = minimal_normalize_text('\n'.join(pre_text_parts[:10]))
             docling_meta = extract_metadata_from_docling_text(preview)
             if docling_meta.get('court'):
                 doc_metadata['court'] = docling_meta['court']
-            if docling_meta.get('doc_id'):
+            # Priorizáljuk a szövegből kinyert ügyszámot
+            if docling_meta.get('doc_id') and docling_meta['doc_id'].strip():
                 doc_id = docling_meta['doc_id']
+                # Ügyszámból kinyert year és domain felülírja a path-ból nyertet
+                if docling_meta.get('year') and not doc_metadata.get('year'):
+                    doc_metadata['year'] = docling_meta['year']
+                if docling_meta.get('domain') and not doc_metadata.get('domain'):
+                    doc_metadata['domain'] = docling_meta['domain']
 
         tmp_dir.mkdir(parents=True, exist_ok=True)
         tmp_path = tmp_dir / f"tmp_{filepath.stem}_{mp.current_process().pid}.jsonl"
@@ -306,6 +371,7 @@ def process_single_file_worker(filepath_str: str, raw_root_str: str, tmp_dir_str
 
         if chunk_count == 0:
             tmp_path.unlink(missing_ok=True)  # type: ignore[arg-type]
+            print(f"Figyelmeztetés: Nincs chunk a dokumentumból: {filepath.name}")
             return None
 
         try:
@@ -324,7 +390,8 @@ def process_single_file_worker(filepath_str: str, raw_root_str: str, tmp_dir_str
             'raw_rel_path': normalize_raw_path(filepath, raw_root),
         }
 
-    except Exception:
+    except Exception as e:
+        print(f"Hiba a {filepath.name} feldolgozása során: {type(e).__name__}: {str(e)[:100]}")
         return None
 
 

@@ -102,12 +102,19 @@ def export_slates_for_grpo_training(retriever: HybridRetriever, qrels: Dict[str,
                     "faiss_score": 0.0
                 })
 
-            # Add metadata and relevance labels
+            # Add metadata and relevance labels (agents.md: court, domain, year)
             for candidate in sorted_candidates:
                 doc_id = candidate["doc_id"]
                 candidate["relevance"] = relevance_data.get(doc_id, 0)
                 candidate["chunk_id"] = doc_id  # Simplified mapping
                 candidate["query_id"] = query_id
+                
+                # Metaadat betöltése a retriever-ből
+                metadata = retriever.get_doc_metadata(doc_id)
+                candidate["court"] = metadata.get("court", "")
+                candidate["domain"] = metadata.get("domain", "")
+                candidate["year"] = metadata.get("year", "")
+                candidate["text"] = metadata.get("text", "")
 
             slates.append({
                 "query_id": query_id,
