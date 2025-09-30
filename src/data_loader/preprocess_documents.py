@@ -74,7 +74,7 @@ def extract_metadata_from_path(filepath: Path) -> Dict[str, str]:
         'court': court,
         'domain': domain,
         'year': year,
-        'case_identifier': case_id,
+        'doc_id': case_id,
     }
 
 
@@ -114,7 +114,7 @@ def extract_metadata_from_docling_text(text: str) -> Dict[str, str]:
         if court and case_id:
             break
 
-    return {'court': court, 'case_identifier': case_id}
+    return {'court': court, 'doc_id': case_id}
 
 
 def iter_docling_chunks(docling_document: DoclingDocument) -> Iterator[Dict[str, object]]:
@@ -223,7 +223,7 @@ def process_single_file_worker(filepath_str: str, raw_root_str: str, tmp_dir_str
             return None
 
         path_meta = extract_metadata_from_path(filepath)
-        doc_id = path_meta.get('case_identifier') or filepath.stem
+        doc_id = path_meta.get('doc_id') or filepath.stem
         doc_metadata = {
             'court': path_meta.get('court', ''),
             'domain': path_meta.get('domain', ''),
@@ -255,8 +255,8 @@ def process_single_file_worker(filepath_str: str, raw_root_str: str, tmp_dir_str
             docling_meta = extract_metadata_from_docling_text(preview)
             if docling_meta.get('court'):
                 doc_metadata['court'] = docling_meta['court']
-            if docling_meta.get('case_identifier'):
-                doc_id = docling_meta['case_identifier']
+            if docling_meta.get('doc_id'):
+                doc_id = docling_meta['doc_id']
 
         tmp_dir.mkdir(parents=True, exist_ok=True)
         tmp_path = tmp_dir / f"tmp_{filepath.stem}_{mp.current_process().pid}.jsonl"

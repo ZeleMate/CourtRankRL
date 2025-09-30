@@ -20,166 +20,153 @@ sys.path.insert(0, str(project_root))
 from configs import config
 from src.data_loader.preprocess_documents import main as build_docs
 from src.data_loader.build_bm25_index import main as build_bm25
-from src.data_loader.export_training_slates import main as export_slates
 from src.search.hybrid_search import HybridRetriever
-from src.search.grpo_reranker import GRPOReranker
+from src.search.grpo_reranker import GRPOReranker, load_qrels, export_slates_for_grpo_training
 
 def build_command():
     """Build pipeline: Docling → chunking → BM25."""
     print("=== COURTRANKRL BUILD PIPELINE ===")
 
     try:
-        # Step 1: Ingestion with Docling
-        print("📄 Step 1: Docling ingestion and normalization...")
-        print("   (DOCX parsing, minimal normalization)")
+        # 1. lépés: Docling feldolgozás
+        print("1. lépés: Docling feldolgozás és normalizálás...")
+        print("   (DOCX parsing, minimális normalizálás)")
         build_docs()
 
-        # Step 2: Chunking
-        print("✂️  Step 2: Intelligent chunking...")
-        print("   (Docling decides chunk size and overlap)")
+        # 2. lépés: Chunkolás
+        print("2. lépés: Intelligens chunkolás...")
+        print("   (Docling dönti el a chunk méretet és átfedést)")
 
-        # Step 3: BM25 indexing
-        print("🔍 Step 3: BM25S index (bm25s.tokenize + cache)...")
+        # 3. lépés: BM25 indexelés
+        print("3. lépés: BM25S index (bm25s.tokenize + cache)...")
         build_bm25()
 
-        print("\n✅ BUILD PIPELINE COMPLETE!")
-        print("📊 Generated artifacts:")
-        print(f"   📄 Chunks: {config.CHUNKS_JSONL}")
-        print(f"   🔍 BM25 Index: {config.BM25_INDEX_PATH}")
+        print("\nBUILD PIPELINE KÉSZ!")
+        print("Generált artifaktumok:")
+        print(f"   Chunks: {config.CHUNKS_JSONL}")
+        print(f"   BM25 Index: {config.BM25_INDEX_PATH}")
 
-        print("\n🚀 Ready for queries! Use: uv run courtrankrl query \"your question\"")
-        print("📝 Note: FAISS index and embeddings should be generated using gemma_embedding_runpod.ipynb")
-
-    except Exception as e:
-        print(f"\n❌ BUILD FAILED: {e}")
-        print("💡 Check the error message above and try again.")
-        sys.exit(1)
-
-def export_slate_command():
-    """Export training slates for GRPO cloud training."""
-    print("=== COURTRANKRL SLATE EXPORT ===")
-    print("🎯 Training slates exportálása GRPO cloud traininghez")
-    print("📁 Kimenet: data/models/grpo_policy/training_slates.jsonl")
-
-    try:
-        export_slates()
-        print("\n✅ SLATE EXPORT KÉSZ!")
-        print("📊 Exportált fájlok:")
-        print(f"   📄 Training slates: {config.GRPO_SLATE_EXPORT_PATH}")
-        print("\n🚀 Készen a cloud trainingre!")
-        print("💡 Futtasd: notebooks/grpo_train_runpod.ipynb a Runpod-on")
+        print("\nKész a lekérdezésre! Használat: uv run courtrankrl query \"kérdés\"")
+        print("Megjegyzés: FAISS index generálása szükséges a gemma_embedding_runpod.ipynb futtatásával")
 
     except Exception as e:
-        print(f"\n❌ SLATE EXPORT FAILED: {e}")
-        print("💡 Győződj meg róla, hogy a qrels és chunks fájlok léteznek.")
+        print(f"\nBUILD SIKERTELEN: {e}")
+        print("Ellenőrizd a hibaüzenetet és próbáld újra.")
         sys.exit(1)
 
 def query_command(query: str, top_k: int = 10, rerank: bool = True):
     """Query pipeline: embed query → BM25 + dense → fusion → RL reranking → doc IDs."""
     print("=== COURTRANKRL QUERY PIPELINE ===")
-    print(f"🔍 Lekérdezés: {query}")
-    print(f"📊 Top-K: {top_k}")
-    print(f"🧠 Reranking: {'bekapcsolva' if rerank else 'kikapcsolva'}")
+    print(f"Lekérdezés: {query}")
+    print(f"Top-K: {top_k}")
+    print(f"Reranking: {'bekapcsolva' if rerank else 'kikapcsolva'}")
 
     try:
-        # Initialize retriever
+        # Retriever inicializálása
         retriever = HybridRetriever()
 
         if rerank:
-            # Step 1: Get candidates for reranking (agents.md step 4)
-            print("📋 Step 1: Retrieving candidates for reranking...")
+            # 1. lépés: Jelöltek lekérése rerankinghez (agents.md 4. lépés)
+            print("1. lépés: Jelöltek lekérése rerankinghez...")
             retriever.retrieve_candidates(query, top_k=config.TOP_K_BASELINE)
             bm25_results = retriever.get_last_doc_scores("bm25")
             dense_results = retriever.get_last_doc_scores("dense")
 
-            print(f"   📄 BM25 jelöltek: {len(bm25_results)}")
-            print(f"   🧠 Dense jelöltek: {len(dense_results)}")
+            print(f"   BM25 jelöltek: {len(bm25_results)}")
+            print(f"   Dense jelöltek: {len(dense_results)}")
 
-            # Step 2: Apply GRPO reranking (agents.md step 5)
-            print("🎯 Step 2: Applying GRPO reranking...")
+            # 2. lépés: GRPO reranking alkalmazása (agents.md 5. lépés)
+            print("2. lépés: GRPO reranking alkalmazása...")
             try:
                 reranker = GRPOReranker()
-                # Load chunks data for context
-                chunks_data = {}
-                if config.CHUNKS_JSONL.exists():
-                    import json
-                    with open(config.CHUNKS_JSONL, 'r', encoding='utf-8') as f:
-                        for line in f:
-                            chunk = json.loads(line.strip())
-                            chunks_data[chunk['chunk_id']] = chunk
 
-                reranked = reranker.rerank(retriever, bm25_results, dense_results, query, chunks_data)[:top_k]
-                print(f"   ✅ Újrendezett lista: {len(reranked)} dokumentum")
+                # Eredmények konvertálása jelölt formátumra
+                candidates = []
+                all_docs = set()
+                for doc_id, score in bm25_results:
+                    all_docs.add(doc_id)
+                    candidates.append({
+                        "doc_id": doc_id,
+                        "bm25_score": score,
+                        "faiss_score": dense_results.get(doc_id, 0.0) if doc_id in [d[0] for d in dense_results] else 0.0
+                    })
 
-                print("\n🎯 RERANKELT EREDMÉNYEK:")
-                for idx, (doc_id, score) in enumerate(reranked, start=1):
-                    print(f"{idx}. {doc_id} (GRPO pont: {score:.4f})")
+                # Reranking
+                reranked = reranker.rerank(query, candidates)[:top_k]
+                print(f"   Újrendezett lista: {len(reranked)} dokumentum")
+
+                print("\nRERANKELT EREDMÉNYEK:")
+                for idx, candidate in enumerate(reranked, start=1):
+                    print(f"{idx}. {candidate['doc_id']}")
 
             except Exception as e:
-                print(f"⚠️  GRPO reranker unavailable ({e}), falling back to baseline...")
+                print(f"Figyelmeztetés: Reranker nem elérhető ({e}), baseline használata...")
                 rerank = False
 
         if not rerank:
-            # Step 1: Hybrid baseline retrieval (agents.md step 4)
-            print("📋 Step 1: Hybrid baseline retrieval...")
+            # 1. lépés: Hibrid baseline retrieval (agents.md 4. lépés)
+            print("1. lépés: Hibrid baseline retrieval...")
             doc_ids = retriever.retrieve(query, top_k=top_k, fusion_method="rrf")
 
-            print(f"   📄 Találatok száma: {len(doc_ids)}")
+            print(f"   Találatok száma: {len(doc_ids)}")
 
-            print("\n🔍 BASELINE EREDMÉNYEK:")
+            print("\nBASELINE EREDMÉNYEK:")
             for idx, doc_id in enumerate(doc_ids, start=1):
                 print(f"{idx}. {doc_id}")
 
-        print(f"\n✅ Query completed successfully!")
+        print(f"\nQuery sikeresen befejezve!")
 
     except Exception as e:
-        print(f"\n❌ QUERY FAILED: {e}")
-        print("💡 Make sure indexes are built: uv run courtrankrl build")
+        print(f"\nQUERY SIKERTELEN: {e}")
+        print("Ellenőrizd, hogy az indexek elkészültek: uv run courtrankrl build")
         sys.exit(1)
 
 def train_command():
-    """Train GRPO reranker using cloud notebook."""
+    """Train GRPO reranker: load qrels → baseline candidates → features → GRPO training."""
     print("=== COURTRANKRL GRPO TRAINING PIPELINE ===")
     print("Agents.md spec: 5) RL Reranking (GRPO-style)")
-    print("🎯 Cél: a baseline javítása megerősítéses tanulással")
-    print("☁️  Training a cloud GPU-n (Runpod) keresztül")
+    print("Cél: a baseline javítása megerősítéses tanulással")
 
     try:
-        # Check prerequisites
-        if not config.BASELINE_QRELS_FILE.exists():
-            print(f"❌ Qrels fájl nem található: {config.BASELINE_QRELS_FILE}")
-            print("💡 Hozz létre qrels fájlt: data/qrels/baseline_qrels.tsv")
-            sys.exit(1)
+        # 1. lépés: Qrels betöltése
+        print("1. lépés: Qrels betöltése...")
+        qrels = load_qrels(config.QRELS_FILE)
 
-        if not config.CHUNKS_JSONL.exists():
-            print(f"❌ Chunks fájl nem található: {config.CHUNKS_JSONL}")
-            print("💡 Futtasd előbb: uv run courtrankrl build")
-            sys.exit(1)
+        if not qrels:
+            print(f"Nincs qrels adat: {config.QRELS_FILE}")
+            return
 
-        print("📋 Prerequisites check: ✅")
-        print("📚 Tanító adatok előkészítése...")
+        print(f"   Betöltött query-k: {len(qrels)}")
 
-        # Export training slates
-        export_slates()
+        # 2. lépés: Retriever inicializálása
+        print("2. lépés: Retriever inicializálása...")
+        retriever = HybridRetriever()
 
-        print("\n✅ TRAINING DATA ELŐKÉSZÍTVE!")
-        print("📊 Exportált fájlok:")
-        print(f"   📄 Training slates: {config.GRPO_SLATE_EXPORT_PATH}")
+        # 3. lépés: Slate export cloud traininghez
+        print("3. lépés: Slate export cloud traininghez...")
+        slates = export_slates_for_grpo_training(retriever, qrels, config.SLATE_EXPORT_PATH)
 
-        print("\n🚀 KÖVETKEZŐ LÉPÉSEK:")
-        print("1. Másold át a training slates fájlt a Runpod workspace-be")
-        print("2. Futtasd a notebook-ot: notebooks/grpo_train_runpod.ipynb")
-        print("3. Másold vissza az artifacts könyvtárat: data/models/grpo_policy/")
-        print("4. Teszteld a query parancsot --rerank opcióval")
+        print("4. lépés: Cloud training notebook futtatása...")
+        print(f"   Notebook: {config.GRPO_TRAIN_NOTEBOOK}")
+        print("   RunPod-on futtassa: grpo_train_runpod.ipynb")
+        print("   Input: training_slates.jsonl (kész)")
 
-        print("\n💡 Runpod workflow:")
-        print("   - Environment variables: HF_TOKEN beállítva")
-        print("   - Mixed precision: bf16 engedélyezve")
-        print("   - Artifacts sync: /workspace/artifacts/grpo_policy/ → local data/models/grpo_policy/")
+        print("\nGRPO TRAINING ELŐKÉSZÍTVE!")
+        print("Következő lépések:")
+        print("   1. Másolja a slates fájlt RunPod-ra")
+        print(f"   2. Futtassa: {config.GRPO_TRAIN_NOTEBOOK}")
+        print("   3. Töltse le az adapter fájlokat")
+        print("   4. Helyezze el: data/models/grpo_policy/")
+
+        print("\nArtifactumok:")
+        print(f"   Slates: {config.SLATE_EXPORT_PATH}")
+        print(f"   Adapter: {config.GRPO_ADAPTER_PATH} (RunPod-ról)")
+        print(f"   Tokenizer: {config.GRPO_TOKENIZER_PATH} (RunPod-ról)")
+        print(f"   Metrics: {config.GRPO_METRICS_PATH} (RunPod-ról)")
 
     except Exception as e:
-        print(f"\n❌ GRPO TRAINING PREP FAILED: {e}")
-        print("💡 Check prerequisites and try again.")
+        print(f"\nGRPO TRAINING ELŐKÉSZÍTÉS SIKERTELEN: {e}")
+        print("Ellenőrizd, hogy a qrels fájl létezik és az indexek elkészültek.")
         sys.exit(1)
 
 def main():
@@ -199,17 +186,12 @@ Példák használatra:
   # Keresés GRPO reranking-gal
   uv run courtrankrl query "szerződéses jog" --top-k 5
 
-  # Training slates exportálása
-  uv run courtrankrl export-slate
-
-  # GRPO cloud training előkészítése
+  # GRPO policy tanítása (cloud előkészítés)
   uv run courtrankrl train
 
 Használat előtt:
   1. uv run courtrankrl build
   2. Generate FAISS index using gemma_embedding_runpod.ipynb
-  3. Export training slates: uv run courtrankrl export-slate
-  4. Cloud GRPO training: notebooks/grpo_train_runpod.ipynb
         """
     )
 
@@ -243,16 +225,10 @@ Használat előtt:
         help='GRPO reranking kikapcsolása (csak baseline keresés)'
     )
 
-    # Export slate command
-    export_slate_parser = subparsers.add_parser(
-        'export-slate',
-        help='Training slates exportálása GRPO cloud traininghez'
-    )
-
     # Train command
     train_parser = subparsers.add_parser(
         'train',
-        help='GRPO reranker cloud training előkészítése'
+        help='GRPO reranker policy tanítása'
     )
 
     # Parse arguments
@@ -263,13 +239,11 @@ Használat előtt:
         build_command()
     elif args.command == 'query':
         query_command(args.query, args.top_k, not args.no_rerank)
-    elif args.command == 'export-slate':
-        export_slate_command()
     elif args.command == 'train':
         train_command()
     else:
         parser.print_help()
-        print("\n💡 Kezdéshez: uv run courtrankrl build")
+        print("\nKezdéshez: uv run courtrankrl build")
 
 if __name__ == '__main__':
     main()
