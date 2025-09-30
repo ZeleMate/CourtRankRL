@@ -206,7 +206,6 @@ class BM25Index:
             k = min(top_k, len(self.chunk_ids))
             documents, scores = self.bm25s_model.retrieve(
                 query_tokens,
-                corpus=self.chunk_ids,
                 k=k,
                 return_as="tuple",
                 show_progress=False
@@ -214,13 +213,25 @@ class BM25Index:
 
             # Eredmények feldolgozása
             results = []
-            doc_indices = documents[0] if len(documents) > 0 else []
+            doc_objects = documents[0] if len(documents) > 0 else []
             score_values = scores[0] if len(scores) > 0 else []
 
-            for doc_idx, score_val in zip(doc_indices, score_values):
-                if isinstance(doc_idx, (int, np.integer)) and 0 <= doc_idx < len(self.chunk_ids):
-                    doc_id = self.chunk_ids[int(doc_idx)]
-                    results.append((doc_id, float(score_val)))
+            for doc_obj, score_val in zip(doc_objects, score_values):
+                if isinstance(doc_obj, dict):
+                    # BM25S modell dokumentum objektumokat ad vissza {'id': 0, 'text': 'chunk_id'}
+                    # A 'text' mező tartalmazza a chunk_id-t, az 'id' csak egy index
+                    if 'text' in doc_obj:
+                        chunk_id = str(doc_obj['text'])
+                        results.append((chunk_id, float(score_val)))
+                    elif 'id' in doc_obj and 0 <= int(doc_obj['id']) < len(self.chunk_ids):
+                        # Fallback: id alapján keressük meg a chunk_id-t
+                        chunk_id = self.chunk_ids[int(doc_obj['id'])]
+                        results.append((chunk_id, float(score_val)))
+                elif isinstance(doc_obj, (int, np.integer)):
+                    # Alternatív eset: indexek
+                    if 0 <= int(doc_obj) < len(self.chunk_ids):
+                        chunk_id = self.chunk_ids[int(doc_obj)]
+                        results.append((chunk_id, float(score_val)))
 
             return results
 
@@ -323,6 +334,15 @@ class BM25Index:
             try:
                 index.bm25s_model = bm25s.BM25.load(str(model_dir), load_corpus=True)
                 print("✅ BM25S modell betöltve")
+                # Szókincs betöltése a modellből
+                if hasattr(index.bm25s_model, 'vocab') and index.bm25s_model.vocab_dict:
+                    index.vocab = index.bm25s_model.vocab_dict
+                else:
+                    # Alternatív megoldás: vocab fájl betöltése
+                    vocab_path = model_dir / "vocab.index.json"
+                    if vocab_path.exists():
+                        with open(vocab_path, 'r', encoding='utf-8') as f:
+                            index.vocab = json.load(f)
             except Exception as e:
                 print(f"BM25S modell betöltési hiba: {e}")
                 index.bm25s_model = None

@@ -13,7 +13,7 @@ Főbb jellemzők:
 import json
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, cast
+from typing import Any, Dict, List, Optional, Set, Tuple, cast
 
 import faiss
 import numpy as np
@@ -33,7 +33,7 @@ class HybridRetriever:
 
     def __init__(self) -> None:
         self.device = self._detect_device()
-        self.model_name = config.EMBEDDING_GEMMA_MODEL_NAME
+        self.model_name = getattr(config, "EMBEDDING_GEMMA_MODEL_NAME", "google/embeddinggemma-300m")
         self.tokenizer: Optional[Any] = None
         self.model: Optional[nn.Module] = None
 
@@ -41,6 +41,9 @@ class HybridRetriever:
         self.bm25_stats: Dict[str, float] = {}
         self.faiss_index = None
         self.chunk_id_map: Dict[str, str] = {}
+        self.doc_id_map: Dict[str, str] = {}
+        self.chunk_to_doc: Dict[str, str] = {}
+        self.known_chunk_ids: Set[str] = set()
 
         # Lefutások közben tárolt részletes score-ok (GRPO feature export)
         self.last_chunk_scores: Dict[str, List[Tuple[str, float]]] = {
@@ -56,8 +59,32 @@ class HybridRetriever:
         self._load_models_and_indexes()
 
     @staticmethod
-    def _chunk_id_to_doc_id(chunk_id: str) -> str:
-        return chunk_id.split("_")[0]
+    def _strip_chunk_suffix(chunk_id: str) -> str:
+        if "_" not in chunk_id:
+            return chunk_id
+        base, suffix = chunk_id.rsplit("_", 1)
+        if suffix.isdigit():
+            return base
+        return chunk_id
+
+    def _chunk_id_to_doc_id(self, chunk_id: str) -> str:
+        if chunk_id in self.chunk_to_doc:
+            return self.chunk_to_doc[chunk_id]
+
+        if chunk_id in self.known_chunk_ids:
+            doc_id = self._strip_chunk_suffix(chunk_id)
+            self.chunk_to_doc[chunk_id] = doc_id
+            return doc_id
+
+        if "_" in chunk_id:
+            base, suffix = chunk_id.rsplit("_", 1)
+            if suffix.isdigit():
+                first_chunk_candidate = f"{base}_0"
+                if first_chunk_candidate in self.known_chunk_ids:
+                    self.chunk_to_doc[chunk_id] = base
+                    return base
+
+        return chunk_id
 
     @staticmethod
     def _detect_device() -> str:
@@ -72,7 +99,7 @@ class HybridRetriever:
             self._load_transformer_model()
             self._load_bm25_index()
             self._load_faiss_index()
-            self._load_chunk_id_map()
+            self._load_id_maps()
         except Exception as exc:
             print(f"❌ Hiba a komponensek betöltésekor: {exc}")
             raise
@@ -169,15 +196,32 @@ class HybridRetriever:
         except Exception as exc:
             print(f"⚠️  FAISS betöltési hiba: {exc}")
 
-    def _load_chunk_id_map(self) -> None:
-        if not config.CHUNK_ID_MAP_PATH.exists():
-            return
-        try:
-            with open(config.CHUNK_ID_MAP_PATH, "r", encoding="utf-8") as handle:
-                self.chunk_id_map = json.load(handle)
-            print(f"🔗 Chunk ID mapping betöltve ({len(self.chunk_id_map)} elem)")
-        except Exception as exc:
-            print(f"⚠️  Chunk ID mapping betöltési hiba: {exc}")
+    def _load_id_maps(self) -> None:
+        self.chunk_id_map = {}
+        self.doc_id_map = {}
+        self.chunk_to_doc = {}
+        self.known_chunk_ids = set()
+
+        chunk_map_path = getattr(config, "CHUNK_ID_MAP_PATH", None)
+        if chunk_map_path and Path(chunk_map_path).exists():
+            try:
+                with open(chunk_map_path, "r", encoding="utf-8") as handle:
+                    self.chunk_id_map = json.load(handle)
+                self.known_chunk_ids = set(self.chunk_id_map.values())
+                for chunk_id in self.known_chunk_ids:
+                    self.chunk_to_doc[chunk_id] = self._strip_chunk_suffix(chunk_id)
+                print(f"🔗 Chunk ID mapping betöltve ({len(self.chunk_id_map)} elem)")
+            except Exception as exc:
+                print(f"⚠️  Chunk ID mapping betöltési hiba: {exc}")
+
+        doc_map_path = getattr(config, "DOC_ID_MAP_PATH", None)
+        if doc_map_path and Path(doc_map_path).exists():
+            try:
+                with open(doc_map_path, "r", encoding="utf-8") as handle:
+                    self.doc_id_map = json.load(handle)
+                print(f"🗂️  Doc ID mapping betöltve ({len(self.doc_id_map)} elem)")
+            except Exception as exc:
+                print(f"⚠️  Doc ID mapping betöltési hiba: {exc}")
 
     def _embed_query(self, query: str) -> np.ndarray:
         if not self.tokenizer or not self.model:
@@ -193,7 +237,7 @@ class HybridRetriever:
                 query,
                 return_tensors="pt",
                 truncation=True,
-                max_length=config.EMBEDDING_MAX_LENGTH,
+                max_length=getattr(config, "EMBEDDING_MAX_LENGTH", 1024),
                 padding=True,
                 return_attention_mask=True,
             )
@@ -211,6 +255,8 @@ class HybridRetriever:
                 else:
                     embedding = torch.mean(outputs.last_hidden_state, dim=1).float()
 
+                if embedding.ndim == 2 and embedding.shape[0] == 1:
+                    embedding = embedding.squeeze(0)
                 if model_device.type != "cpu":
                     embedding = embedding.cpu()
 
@@ -239,17 +285,16 @@ class HybridRetriever:
         return ranked_docs, doc_chunks
 
     def retrieve_candidates(
-        self, query: str, top_k: int = 100
+        self, query: str, top_k: int = 20
     ) -> Tuple[List[Tuple[str, float]], List[Tuple[str, float]]]:
         bm25_results: List[Tuple[str, float]] = []
         dense_results: List[Tuple[str, float]] = []
 
         if self.bm25:
             chunk_hits = self.bm25.search(query, top_k=top_k)
-            bm25_results, bm25_chunks = self._aggregate_by_doc(chunk_hits)
+            bm25_results, _ = self._aggregate_by_doc(chunk_hits)
             self.last_chunk_scores["bm25"] = chunk_hits
             self.last_doc_scores["bm25"] = bm25_results
-            self.bm25_chunk_groups = bm25_chunks
         else:
             self.last_chunk_scores["bm25"] = []
             self.last_doc_scores["bm25"] = []
@@ -257,20 +302,23 @@ class HybridRetriever:
         if self.faiss_index and self.chunk_id_map:
             try:
                 query_emb = self._embed_query(query)
-                distances, indices = self.faiss_index.search(np.array([query_emb]), top_k)
+                distances, indices = self.faiss_index.search(np.expand_dims(query_emb, axis=0), top_k)
                 dense_chunks: List[Tuple[str, float]] = []
                 for distance, idx in zip(distances[0], indices[0]):
                     if idx == -1:
                         continue
                     chunk_id = self.chunk_id_map.get(str(idx))
-                    if not chunk_id:
+                    doc_id = self.doc_id_map.get(str(idx)) if not chunk_id else None
+                    if not chunk_id and not doc_id:
                         continue
-                    dense_chunks.append((chunk_id, float(distance)))
+                    identifier = chunk_id if chunk_id else doc_id
+                    if identifier is None:
+                        continue
+                    dense_chunks.append((identifier, float(distance)))
 
-                dense_results, dense_groups = self._aggregate_by_doc(dense_chunks)
+                dense_results, _ = self._aggregate_by_doc(dense_chunks)
                 self.last_chunk_scores["dense"] = dense_chunks
                 self.last_doc_scores["dense"] = dense_results
-                self.dense_chunk_groups = dense_groups
             except Exception as exc:
                 print(f"Dense retrieval hiba: {exc}")
         else:

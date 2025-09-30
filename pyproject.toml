@@ -29,6 +29,8 @@ dependencies = [
     "accelerate",
     "bm25s",
     "huggingface_hub",
+    "trl",
+    "peft",
 ]
 
 [build-system]
