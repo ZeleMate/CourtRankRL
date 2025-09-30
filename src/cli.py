@@ -81,6 +81,7 @@ def query_command(query: str, top_k: int = 10, rerank: bool = True):
                 reranker = GRPOReranker()
 
                 # Eredmények konvertálása jelölt formátumra
+                dense_scores = dict(dense_results)
                 candidates = []
                 all_docs = set()
                 for doc_id, score in bm25_results:
@@ -88,7 +89,7 @@ def query_command(query: str, top_k: int = 10, rerank: bool = True):
                     candidates.append({
                         "doc_id": doc_id,
                         "bm25_score": score,
-                        "faiss_score": dense_results.get(doc_id, 0.0) if doc_id in [d[0] for d in dense_results] else 0.0
+                        "faiss_score": dense_scores.get(doc_id, 0.0)
                     })
 
                 # Reranking
