@@ -52,20 +52,27 @@ def minimal_normalize_text(text: str) -> str:
 
 
 def extract_metadata_from_path(filepath: Path) -> Dict[str, str]:
+    """
+    Metaadat kinyerése a fájl útvonalából.
+    
+    Könyvtárstruktúra: /data/raw/[Bíróság]/[jogterület]/[case_id]/[fájlnév].DOCX
+    Az évszámot NEM a könyvtárból, hanem az ügyszámból nyerjük ki a regex alapú feldolgozással.
+    """
     parts = filepath.parts
-    court = domain = year = case_id = ""
+    court = domain = case_id = ""
 
     if len(parts) >= 4:
         court = parts[-4]
         domain = parts[-3]
-        year = parts[-2]
+        # parts[-2] a case_id könyvtár, NEM az év!
+        # Az évszámot később az ügyszámból nyerjük ki
         case_id = Path(parts[-1]).stem
 
-    if not all([court, domain, year]):
+    if not all([court, domain]):
         stem = filepath.stem
         tokens = stem.split('_')
-        if len(tokens) >= 4:
-            court, domain, year = tokens[:3]
+        if len(tokens) >= 2:
+            court, domain = tokens[:2]
             case_id = '_'.join(tokens)
         else:
             case_id = stem
@@ -73,24 +80,27 @@ def extract_metadata_from_path(filepath: Path) -> Dict[str, str]:
     return {
         'court': court,
         'domain': domain,
-        'year': year,
+        'year': '',  # Év üresen marad, később az ügyszámból nyerjük ki
         'doc_id': case_id,
     }
 
 
-def extract_metadata_from_docling_text(text: str, max_lines: int = 30) -> Dict[str, str]:
+def extract_metadata_from_docling_text(text: str, max_lines: int = 30, check_end_for_date: bool = True) -> Dict[str, str]:
     """
     Metadata kinyerése a dokumentum szövegéből.
     
     Args:
         text: A dokumentum szövege
-        max_lines: Maximum hány sort vizsgáljon (default: 30)
+        max_lines: Maximum hány sort vizsgáljon az elején (default: 30)
+        check_end_for_date: Ha True, a dokumentum végéről is keres dátumot (default: True)
     """
     import re
 
     court = ""
     case_id = ""
-    lines = text.split('\n')[:max_lines]
+    year = ""
+    lines = text.split('\n')
+    header_lines = lines[:max_lines]
 
     court_patterns = [
         r'([A-ZÁÉÍÓÖŐÚÜŰ][a-záéíóöőúüű]+(?:\s+[A-ZÁÉÍÓÖŐÚÜŰ][a-záéíóöőúüű]+)*\s*(?:[Íí]télőtábla|[Tt]örvényszék|[Jj]árásbíróság|[Kk]özigazgatási\s+[és\s+]*[Mm]unkaügyi\s+[Bb]íróság))',
@@ -137,7 +147,8 @@ def extract_metadata_from_docling_text(text: str, max_lines: int = 30) -> Dict[s
         r'([A-Z]\.\d+\.\d+/\d{4}/\d+)',
     ]
 
-    for line in lines:
+    # Bíróság és ügyszám keresése az első max_lines sorból
+    for line in header_lines:
         candidate = line.strip()
         if not candidate:
             continue
@@ -156,18 +167,42 @@ def extract_metadata_from_docling_text(text: str, max_lines: int = 30) -> Dict[s
         if court and case_id:
             break
 
-    # Year és domain kinyerése az ügyszámból ha lehetséges
-    year = ""
-    domain = ""
-    if case_id:
-        import re
-        # Év kinyerése (pl. 2023 a P.20.126/2023/5 -ből)
+    # Év kinyerése: először a dokumentum VÉGÉRŐL keressük a határozat dátumát
+    # Formátum: "Helység, ÉÉÉÉ. hónap nap." (pl. "Sárvár, 2020. március 2.")
+    if check_end_for_date and len(lines) > 10:
+        # Utolsó 50 sor vizsgálata (ahol a dátum általában van)
+        end_lines = lines[-50:]
+        date_patterns = [
+            r'[A-ZÁÉÍÓÖŐÚÜŰ][a-záéíóöőúüű]+,\s*(\d{4})\.\s+(?:január|február|március|április|május|június|július|augusztus|szeptember|október|november|december)',
+            r'\b(\d{4})\.\s+(?:január|február|március|április|május|június|július|augusztus|szeptember|október|november|december)\s+\d{1,2}\.',
+            r',\s*(\d{4})\.\s+\w+\s+\d{1,2}\.',  # Általános: ", 2020. szó szám."
+        ]
+        
+        for line in reversed(end_lines):
+            candidate = line.strip()
+            if not candidate:
+                continue
+            for pattern in date_patterns:
+                match = re.search(pattern, candidate, re.IGNORECASE)
+                if match:
+                    extracted_year = match.group(1)
+                    # Validálás: 1990-2099 között legyen az év
+                    if 1990 <= int(extracted_year) <= 2099:
+                        year = extracted_year
+                        break
+            if year:
+                break
+
+    # Ha nem találtunk évet a végén, próbáljuk az ügyszámból
+    if not year and case_id:
         year_match = re.search(r'/(\d{4})/', case_id)
         if year_match:
             year = year_match.group(1)
-        
-        # Domain kinyerése (K, Pf, Kfv, Are, stb.)
-        domain_match = re.match(r'^(\d+[-_])?([A-Za-z]+)', case_id)
+
+    # Domain kinyerése az ügyszámból ha lehetséges
+    domain = ""
+    if case_id:
+        domain_match = re.match(r'^(\d+[-_.])?([A-Za-z]+)', case_id)
         if domain_match:
             domain = domain_match.group(2).upper()
     
@@ -181,14 +216,7 @@ def iter_docling_chunks(docling_document: DoclingDocument) -> Iterator[Dict[str,
     for chunk in chunker.chunk(docling_document):
         chunk_text = getattr(chunk, 'text', None)
         if chunk_text and str(chunk_text).strip():
-            yield {
-                'text': chunk_text,
-                'chunk_type': getattr(chunk, 'chunk_type', 'docling_chunk'),
-                'hierarchy_level': getattr(chunk, 'hierarchy_level', 0),
-                'page_numbers': getattr(chunk, 'page_numbers', [1]),
-                'headings': getattr(chunk, 'headings', []),
-                'captions': getattr(chunk, 'captions', []),
-            }
+            yield {'text': chunk_text}
 
 
 def normalize_raw_path(path: Path | str, root: Path) -> str:
@@ -289,45 +317,67 @@ def process_single_file_worker(filepath_str: str, raw_root_str: str, tmp_dir_str
             'source_path': str(filepath),
         }
 
-        pre_chunks: List[Dict[str, object]] = []
-        pre_text_parts: List[str] = []
-        char_cap = 2000
+        # Először gyűjtsük össze az ÖSSZES chunk-ot egy listába
+        all_chunks: List[Dict[str, object]] = list(iter_docling_chunks(docling_doc))
+        
+        if not all_chunks:
+            print(f"Figyelmeztetés: Nincs chunk a dokumentumból: {filepath.name}")
+            return None
+
+        # Metaadat kinyerés: első és utolsó chunk-ok szövegéből
+        # Első 2000 karakter az ügyszámhoz, bírósághoz
+        # Utolsó 2000 karakter a határozat dátumához (év kinyerése)
+        first_text_parts: List[str] = []
+        last_text_parts: List[str] = []
+        
         char_count = 0
-
-        chunk_iter = iter_docling_chunks(docling_doc)
-        for _ in range(10):
-            try:
-                chunk = next(chunk_iter)
-            except StopIteration:
-                break
-            pre_chunks.append(chunk)
+        for chunk in all_chunks:
             text = chunk.get('text', '')
-            if text:
-                pre_text_parts.append(str(text))
+            if text and char_count < 2000:
+                first_text_parts.append(str(text))
                 char_count += len(str(text))
-            if char_count >= char_cap:
-                break
+        
+        # Utolsó 2000 karakter gyűjtése (visszafelé haladva)
+        char_count = 0
+        for chunk in reversed(all_chunks):
+            text = chunk.get('text', '')
+            if text and char_count < 2000:
+                last_text_parts.insert(0, str(text))
+                char_count += len(str(text))
 
-        if pre_text_parts:
-            # Bővebb preview a jobb felismeréshez
-            preview = minimal_normalize_text('\n'.join(pre_text_parts[:10]))
-            docling_meta = extract_metadata_from_docling_text(preview)
+        if first_text_parts or last_text_parts:
+            # Teljes szöveg összeállítása metaadat kinyeréshez
+            full_preview = minimal_normalize_text(
+                '\n'.join(first_text_parts) + '\n[...]\n' + '\n'.join(last_text_parts)
+            )
+            docling_meta = extract_metadata_from_docling_text(full_preview)
             if docling_meta.get('court'):
                 doc_metadata['court'] = docling_meta['court']
             # Priorizáljuk a szövegből kinyert ügyszámot
             if docling_meta.get('doc_id') and docling_meta['doc_id'].strip():
                 doc_id = docling_meta['doc_id']
-                # Ügyszámból kinyert year és domain felülírja a path-ból nyertet
-                if docling_meta.get('year') and not doc_metadata.get('year'):
+                # Ügyszámból és dátumból kinyert year és domain felülírja a path-ból nyertet
+                if docling_meta.get('year'):
                     doc_metadata['year'] = docling_meta['year']
-                if docling_meta.get('domain') and not doc_metadata.get('domain'):
+                if docling_meta.get('domain'):
                     doc_metadata['domain'] = docling_meta['domain']
 
         tmp_dir.mkdir(parents=True, exist_ok=True)
         tmp_path = tmp_dir / f"tmp_{filepath.stem}_{mp.current_process().pid}.jsonl"
         batch_buffer: List[str] = []
         chunk_count = 0
-        running_index = 0
+
+        def create_chunk_payload(chunk: Dict[str, object], index: int) -> Dict[str, object]:
+            """Helper to create consistent chunk payload."""
+            return {
+                'chunk_id': f"{doc_id}_{index}",
+                'doc_id': doc_id,
+                'text': chunk['text'],
+                'court': doc_metadata.get('court', ''),
+                'domain': doc_metadata.get('domain', ''),
+                'year': doc_metadata.get('year', ''),
+                'source_path': str(filepath),
+            }
 
         with open(tmp_path, 'w', encoding='utf-8') as handle:
             def flush_buffer() -> None:
@@ -335,50 +385,21 @@ def process_single_file_worker(filepath_str: str, raw_root_str: str, tmp_dir_str
                     handle.write(''.join(batch_buffer))
                     batch_buffer.clear()
 
-            for chunk in pre_chunks:
-                payload = {
-                    'chunk_id': f"{doc_id}_{running_index}",
-                    'doc_id': doc_id,
-                    'text': chunk['text'],
-                    'court': doc_metadata.get('court', ''),
-                    'domain': doc_metadata.get('domain', ''),
-                    'year': doc_metadata.get('year', ''),
-                    'source_path': str(filepath),
-                }
+            # Process all chunks
+            for index, chunk in enumerate(all_chunks):
+                payload = create_chunk_payload(chunk, index)
                 batch_buffer.append(json.dumps(payload, ensure_ascii=False) + '\n')
-                running_index += 1
-                chunk_count += 1
-                if len(batch_buffer) >= batch_size:
-                    flush_buffer()
-
-            for chunk in chunk_iter:
-                payload = {
-                    'chunk_id': f"{doc_id}_{running_index}",
-                    'doc_id': doc_id,
-                    'text': chunk['text'],
-                    'court': doc_metadata.get('court', ''),
-                    'domain': doc_metadata.get('domain', ''),
-                    'year': doc_metadata.get('year', ''),
-                    'source_path': str(filepath),
-                }
-                batch_buffer.append(json.dumps(payload, ensure_ascii=False) + '\n')
-                running_index += 1
                 chunk_count += 1
                 if len(batch_buffer) >= batch_size:
                     flush_buffer()
 
             flush_buffer()
 
-        if chunk_count == 0:
-            tmp_path.unlink(missing_ok=True)  # type: ignore[arg-type]
-            print(f"Figyelmeztetés: Nincs chunk a dokumentumból: {filepath.name}")
-            return None
-
         try:
             del docling_doc
-            del pre_chunks
-            del pre_text_parts
-            del chunk_iter
+            del all_chunks
+            del first_text_parts
+            del last_text_parts
         except Exception:
             pass
         gc.collect()

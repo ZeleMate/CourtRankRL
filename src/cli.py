@@ -21,7 +21,7 @@ from configs import config
 from src.data_loader.preprocess_documents import main as build_docs
 from src.data_loader.build_bm25_index import main as build_bm25
 from src.search.hybrid_search import HybridRetriever
-from src.search.grpo_reranker import GRPOReranker, load_qrels, export_slates_for_grpo_training
+from src.search.grpo_reranker import load_qrels, prepare_training_slates
 
 def build_command():
     """Build pipeline: Docling → chunking → BM25."""
@@ -54,66 +54,28 @@ def build_command():
         print("Ellenőrizd a hibaüzenetet és próbáld újra.")
         sys.exit(1)
 
-def query_command(query: str, top_k: int = 10, rerank: bool = True):
-    """Query pipeline: embed query → BM25 + dense → fusion → RL reranking → doc IDs."""
+def query_command(query: str, top_k: int = 10):
+    """Query pipeline: embed query → BM25 + dense → RRF fusion → doc IDs (baseline only)."""
     print("=== COURTRANKRL QUERY PIPELINE ===")
     print(f"Lekérdezés: {query}")
     print(f"Top-K: {top_k}")
-    print(f"Reranking: {'bekapcsolva' if rerank else 'kikapcsolva'}")
+    print(f"Fusion: RRF (Reciprocal Rank Fusion)")
 
     try:
         # Retriever inicializálása
         retriever = HybridRetriever()
+        
+        print("Megjegyzés: GRPO reranking csak cloud-on (agents.md specifikáció szerint)")
 
-        if rerank:
-            # 1. lépés: Jelöltek lekérése rerankinghez (agents.md 4. lépés)
-            print("1. lépés: Jelöltek lekérése rerankinghez...")
-            retriever.retrieve_candidates(query, top_k=config.TOP_K_BASELINE)
-            bm25_results = retriever.get_last_doc_scores("bm25")
-            dense_results = retriever.get_last_doc_scores("dense")
+        # Hibrid baseline retrieval (agents.md 3. lépés)
+        print("Hibrid baseline retrieval...")
+        doc_ids = retriever.retrieve(query, top_k=top_k)
 
-            print(f"   BM25 jelöltek: {len(bm25_results)}")
-            print(f"   Dense jelöltek: {len(dense_results)}")
+        print(f"   Találatok száma: {len(doc_ids)}")
 
-            # 2. lépés: GRPO reranking alkalmazása (agents.md 5. lépés)
-            print("2. lépés: GRPO reranking alkalmazása...")
-            try:
-                reranker = GRPOReranker()
-
-                # Eredmények konvertálása jelölt formátumra
-                dense_scores = dict(dense_results)
-                candidates = []
-                all_docs = set()
-                for doc_id, score in bm25_results:
-                    all_docs.add(doc_id)
-                    candidates.append({
-                        "doc_id": doc_id,
-                        "bm25_score": score,
-                        "faiss_score": dense_scores.get(doc_id, 0.0)
-                    })
-
-                # Reranking
-                reranked = reranker.rerank(query, candidates)[:top_k]
-                print(f"   Újrendezett lista: {len(reranked)} dokumentum")
-
-                print("\nRERANKELT EREDMÉNYEK:")
-                for idx, candidate in enumerate(reranked, start=1):
-                    print(f"{idx}. {candidate['doc_id']}")
-
-            except Exception as e:
-                print(f"Figyelmeztetés: Reranker nem elérhető ({e}), baseline használata...")
-                rerank = False
-
-        if not rerank:
-            # 1. lépés: Hibrid baseline retrieval (agents.md 4. lépés)
-            print("1. lépés: Hibrid baseline retrieval...")
-            doc_ids = retriever.retrieve(query, top_k=top_k, fusion_method="rrf")
-
-            print(f"   Találatok száma: {len(doc_ids)}")
-
-            print("\nBASELINE EREDMÉNYEK:")
-            for idx, doc_id in enumerate(doc_ids, start=1):
-                print(f"{idx}. {doc_id}")
+        print("\nBASELINE EREDMÉNYEK:")
+        for idx, doc_id in enumerate(doc_ids, start=1):
+            print(f"{idx}. {doc_id}")
 
         print(f"\nQuery sikeresen befejezve!")
 
@@ -145,7 +107,7 @@ def train_command():
 
         # 3. lépés: Slate export cloud traininghez
         print("3. lépés: Slate export cloud traininghez...")
-        slates = export_slates_for_grpo_training(retriever, qrels, config.SLATE_EXPORT_PATH)
+        slates = prepare_training_slates(retriever, qrels, config.SLATE_EXPORT_PATH)
 
         print("4. lépés: Cloud training notebook futtatása...")
         print(f"   Notebook: {config.GRPO_TRAIN_NOTEBOOK}")
@@ -181,18 +143,22 @@ Példák használatra:
   # Build pipeline futtatása
   uv run courtrankrl build
 
-  # Keresés baseline módban
-  uv run courtrankrl query "családi jogi ügy" --no-rerank
+  # Keresés (RRF fusion)
+  uv run courtrankrl query "családi jogi ügy"
 
-  # Keresés GRPO reranking-gal
-  uv run courtrankrl query "szerződéses jog" --top-k 5
+  # Több találat kérése
+  uv run courtrankrl query "szerződéses jog" --top-k 20
 
-  # GRPO policy tanítása (cloud előkészítés)
+  # GRPO slate export (cloud training előkészítés)
   uv run courtrankrl train
 
-Használat előtt:
+AJÁNLOTT WORKFLOW (szakdolgozat):
   1. uv run courtrankrl build
-  2. Generate FAISS index using gemma_embedding_runpod.ipynb
+  2. Generate FAISS index: gemma_embedding_runpod.ipynb
+  3. Baseline eval: notebooks/baseline_evaluation.ipynb
+  4. GRPO training: grpo_train_runpod.ipynb (cloud)
+  
+Megjegyzés: RRF (Reciprocal Rank Fusion) baseline paraméter-mentesen működik
         """
     )
 
@@ -207,7 +173,7 @@ Használat előtt:
     # Query command
     query_parser = subparsers.add_parser(
         'query',
-        help='Keresés a rendszerben dokumentum azonosítókkal'
+        help='Keresés RRF fúzióval'
     )
     query_parser.add_argument(
         'query',
@@ -216,14 +182,6 @@ Használat előtt:
     query_parser.add_argument(
         '--top-k', type=int, default=10,
         help='Visszaadandó dokumentumok száma (alap: 10)'
-    )
-    query_parser.add_argument(
-        '--fusion-method', choices=['rrf', 'zscore'], default='rrf',
-        help='Fusion method: rrf vagy zscore (alap: rrf)'
-    )
-    query_parser.add_argument(
-        '--no-rerank', action='store_true',
-        help='GRPO reranking kikapcsolása (csak baseline keresés)'
     )
 
     # Train command
@@ -239,7 +197,7 @@ Használat előtt:
     if args.command == 'build':
         build_command()
     elif args.command == 'query':
-        query_command(args.query, args.top_k, not args.no_rerank)
+        query_command(args.query, args.top_k)
     elif args.command == 'train':
         train_command()
     else:

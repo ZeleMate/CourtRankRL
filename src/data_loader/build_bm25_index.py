@@ -37,17 +37,16 @@ class BM25Index:
 
         # BM25S modell és adatok
         self.bm25s_model = None
-        self.corpus: List[str] = []
         self.chunk_ids: List[str] = []
         self.total_docs = 0
         self.avg_doc_length = 0.0
         self.doc_lengths: List[int] = []
         self.vocab: Dict[str, int] = {}
-        self.token_ids: List[List[int]] = []
 
     def _tokenize_query(self, query: str):
-        """Tokenizálás egyetlen lekérdezéshez."""
-        return bm25s.tokenize([query])
+        """Tokenizálás egyetlen lekérdezéshez (case-insensitive)."""
+        # KRITIKUS FIX: Query is lowercase (match corpus tokenization)
+        return bm25s.tokenize([query.lower()])
 
     @staticmethod
     def _has_tokens(tokenized: Any) -> bool:
@@ -104,21 +103,19 @@ class BM25Index:
             print("Token cache betöltve — tokenizálás kihagyva")
             return cached
 
-        print("Tokenizálás...")
-        if config.BM25_STOPWORDS is None:
-            tokenized_result = bm25s.tokenize(
-                texts,
-                return_ids=True,
-                show_progress=True
-            )
-        else:
-            tokenized_result = bm25s.tokenize(
-                texts,
-                stopwords=config.BM25_STOPWORDS,
-                return_ids=True,
-                show_progress=True
-            )
-
+        print("Tokenizálás (case-insensitive)...")
+        # KRITIKUS FIX: Case-insensitive tokenization magyar nyelvhez
+        # 'Család' == 'család' == 'CSALÁD'
+        texts_lower = [text.lower() for text in texts]
+        
+        # BM25S stopwords: None → empty list (agents.md: no stopwords for Hungarian)
+        stopwords_param = config.BM25_STOPWORDS if config.BM25_STOPWORDS is not None else []
+        tokenized_result = bm25s.tokenize(
+            texts_lower,
+            stopwords=stopwords_param,
+            return_ids=True,
+            show_progress=True
+        )
         tokenized = cast(tokenization.Tokenized, tokenized_result)
 
         self._save_token_cache(tokenized)
@@ -128,15 +125,13 @@ class BM25Index:
         """BM25S index építése szövegekből."""
         tokenized = self._tokenize_corpus(texts)
 
-        # Token ID-k és szókincs mentése
-        self.token_ids = list(tokenized.ids)
+        # Szókincs és dokumentum információk mentése
         self.vocab = dict(tokenized.vocab)
-        self.corpus = texts
         self.chunk_ids = chunk_ids
         self.total_docs = len(texts)
 
-        # Dokumentumhosszok számítása
-        self.doc_lengths = [len(ids) for ids in self.token_ids]
+        # Dokumentumhosszok számítása tokenizált adatokból
+        self.doc_lengths = [len(ids) for ids in tokenized.ids]
         self.avg_doc_length = sum(self.doc_lengths) / len(self.doc_lengths) if self.doc_lengths else 0.0
 
         # BM25S index építése
@@ -217,21 +212,11 @@ class BM25Index:
             score_values = scores[0] if len(scores) > 0 else []
 
             for doc_obj, score_val in zip(doc_objects, score_values):
-                if isinstance(doc_obj, dict):
-                    # BM25S modell dokumentum objektumokat ad vissza {'id': 0, 'text': 'chunk_id'}
-                    # A 'text' mező tartalmazza a chunk_id-t, az 'id' csak egy index
-                    if 'text' in doc_obj:
-                        chunk_id = str(doc_obj['text'])
-                        results.append((chunk_id, float(score_val)))
-                    elif 'id' in doc_obj and 0 <= int(doc_obj['id']) < len(self.chunk_ids):
-                        # Fallback: id alapján keressük meg a chunk_id-t
-                        chunk_id = self.chunk_ids[int(doc_obj['id'])]
-                        results.append((chunk_id, float(score_val)))
-                elif isinstance(doc_obj, (int, np.integer)):
-                    # Alternatív eset: indexek
-                    if 0 <= int(doc_obj) < len(self.chunk_ids):
-                        chunk_id = self.chunk_ids[int(doc_obj)]
-                        results.append((chunk_id, float(score_val)))
+                # BM25S modell dokumentum objektumokat ad vissza {'id': index, 'text': 'chunk_id'}
+                # A 'text' mező tartalmazza a chunk_id-t (154. sor: self.bm25s_model.corpus = np.array(self.chunk_ids))
+                if isinstance(doc_obj, dict) and 'text' in doc_obj:
+                    chunk_id = str(doc_obj['text'])
+                    results.append((chunk_id, float(score_val)))
 
             return results
 
@@ -327,7 +312,7 @@ class BM25Index:
                 stats = json.load(f)
             index.total_docs = stats.get('total_docs', 0)
             index.avg_doc_length = stats.get('avg_doc_length', 0.0)
-            index.doc_lengths = stats.get('doc_lengths', [])
+            # doc_lengths nem kerül mentésre a stats.json-be (csak min/max/avg)
 
         # BM25S model betöltése
         if model_dir.exists():
