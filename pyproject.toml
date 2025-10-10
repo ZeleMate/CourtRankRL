@@ -5,32 +5,37 @@ description = "CourtRankRL - Magyar bírósági határozatok retrieval rendszer"
 authors = [{name = "Zelenyiánszki Máté"}]
 requires-python = ">=3.11,<3.12"
 dependencies = [
+    # Core dependencies
     "numpy",
     "pandas",
     "tqdm",
     "torch",
+    
+    # Retrieval & indexing
     "faiss-cpu",
-    "pyarrow",
+    "bm25s",
     "scikit-learn",
-    "networkx",
-    "python-docx",
-    "python-dotenv",
-    "gymnasium",
-    "matplotlib",
-    "seaborn",
-    "beautifulsoup4",
-    "azure-storage-blob",
-    "google-generativeai",
-    "google-genai",
-    "docling",
-    "docling-core",
-    "sentence-transformers",
+    
+    # Hugging Face ecosystem
     "transformers",
     "accelerate",
-    "bm25s",
     "huggingface_hub",
+    "sentence-transformers",
+    
+    # Document processing
+    "docling",
+    "docling-core",
+    
+    # RL training (cloud-only, de lokálisan is kell az import-okhoz)
     "trl",
     "peft",
+    
+    # Utilities
+    "python-dotenv",
+    
+    # Data visualization (data_analysis.ipynb)
+    "matplotlib",
+    "seaborn",
 ]
 
 [build-system]

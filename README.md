@@ -2,14 +2,19 @@
 
 ## Áttekintés
 
-Compute‑light, lokálisan futtatható pipeline magyar bírósági határozatokra. A rendszer Doclinggel feldolgozza a DOCX fájlokat, chunkol, BM25 és FAISS indexet épít, hibrid (sparse+dense) visszakeresést végez RRF fúzióval, és opcionálisan GRPO‑stílusú RL‑lel újrarangsorol. A lekérdezések kimenete kizárólag azonosítókból álló lista (doc_id), magyar nyelvű kísérőszöveg nélkül.
+Compute‑light, lokálisan futtatható pipeline magyar bírósági határozatokra. A rendszer Doclinggel feldolgozza a DOCX fájlokat, chunkol, BM25S és FAISS indexet épít, hibrid (sparse+dense) visszakeresést végez RRF fúzióval. A lekérdezések kimenete kizárólag azonosítókból álló lista (doc_id), magyar nyelvű kísérőszöveg nélkül.
+
+**Architektúra:**
+- **Lokális pipeline:** BM25S + EmbeddingGemma FAISS + hybrid retrieval (M3 MacBook Air 16GB RAM)
+- **Cloud-only GRPO:** Reinforcement learning reranking Qwen3-4B-Instruct modellel (RunPod GPU)
 
 Fő komponensek (high‑level)
-- Docling feldolgozás és minimál normalizálás.
-- Chunkolás átfedéssel, meta megtartással.
-- BM25 (sparse) index és FAISS (dense) index építés.
-- Hibrid visszakeresés RRF fúzióval (alapértelmezett).
-- RL alapú újrarangsorolás (GRPO) – opcionális, PoC‑barát.
+- Docling feldolgozás és minimál normalizálás
+- Chunkolás Docling intelligens szegmentálásával
+- BM25S (sparse) index native tokenizer-rel
+- FAISS (dense) index EmbeddingGemma-300m modellel (L2-normalized, IP metric)
+- Hibrid visszakeresés RRF fúzióval
+- GRPO újrarangsorolás (cloud-only, TRL GRPOTrainer, QLoRA adapters)
 
 ## Telepítés
 
@@ -27,115 +32,217 @@ Megjegyzés: a projekt minden felhasználói kimenete magyar nyelvű; a query v�
 ### 🖥️ Lokális futtatás (CLI)
 
 ```bash
-# Teljes build pipeline (subset → Docling → chunking → BM25 → EmbeddingGemma FAISS)
-python src/cli.py build
+# 1. Build pipeline (Docling → chunking → BM25S)
+uv run courtrankrl build
 
-# Keresés baseline módban
-python src/cli.py query "családi jogi ügy"
+# 2. FAISS index generálás (RunPod GPU-n)
+# Futtassa: notebooks/gemma_embedding_runpod.ipynb
 
-# Keresés GRPO reranking-gal (ha már van trained policy)
-python src/cli.py query "szerződéses jog" --rerank
+# 3. Keresés (baseline only, agents.md szerint)
+uv run courtrankrl query "családi jogi ügy"
 
-# GRPO policy tanítása
-python src/cli.py train
+# 4. GRPO slate export (cloud training előkészítés)
+uv run courtrankrl train
+
+# 5. GRPO training (RunPod GPU-n)
+# Futtassa: notebooks/grpo_train_runpod.ipynb
 ```
+
+**Megjegyzés:** GRPO reranking csak cloud-on (agents.md spec szerint). Lokális query csak baseline-t ad vissza.
 
 ### ☁️ RunPod Cloud GPU futtatás
 
-A projekt **100%-ban kompatibilis** RunPod cloud GPU-kkal:
+A projekt **két cloud notebook-ot** tartalmaz RunPod GPU-ra optimalizálva:
 
+#### 1. FAISS Embedding Index (`gemma_embedding_runpod.ipynb`)
 ```bash
-# 1. Notebook feltöltése RunPod-ra
-# 2. GPU instance indítása (32GB+ memória ajánlott)
-# 3. Jupyter notebook futtatása
+# GPU: A100/H100/RTX 5090 (24GB+ VRAM ajánlott)
+# Input: /workspace/chunks.jsonl
+# Output: /workspace/faiss_index.bin, /workspace/chunk_id_map.json
 
-# Automatikus elérési utak:
-# 📁 Input: /workspace/data/processed/chunks.jsonl
-# 💾 Output: /workspace/data/index/faiss_index.bin
-# 🗺️ Mapping: /workspace/data/index/chunk_id_map.json
+# Model: google/embeddinggemma-300m
+# Optimalizációk: FP16, Flash Attention 2, PyTorch compile
+```
 
-# Részletes útmutató: notebooks/README_embedding.md
+#### 2. GRPO Training (`grpo_train_runpod.ipynb`)
+```bash
+# GPU: RTX 5090 (24GB VRAM) - optimalizált konfiguráció
+# Input: /workspace/training_slates.jsonl (98 query × 20 chunk/slate)
+# Output: /workspace/artifacts/grpo_policy/ (LoRA adapters + metrics)
+
+# Model: Qwen/Qwen3-4B-Instruct-2507 (4-bit) + QLoRA (rank=64, alpha=128)
+# Training: TRL GRPOTrainer GRPO algoritmus
+#   - Loss: dapo (eliminates length bias)
+#   - Reward scaling: batch (robust - PPO Lite)
+#   - Hardware: batch_size=2, grad_accumulation=2, 6 generations/prompt
+#   - Training time: ~45-60 perc (500 steps)
 ```
 
 **Előnyök RunPod-on:**
-- ⚡ **GPU gyorsítás**: 32GB+ memória optimalizálva
+- ⚡ **GPU gyorsítás**: 4B parameter model training
 - 🔄 **Streaming feldolgozás**: 3M+ chunk biztonságos kezelése
-- 📦 **Önálló notebook**: Nem függ külső konfigurációktól
-- 🧠 **Memória optimalizált**: FP16 + batch védelem
+- 📦 **Önálló notebookok**: Környezeti változókból konfigurálható
+- 🧠 **Memória optimalizált**: 4-bit quantization, bf16 compute
 
 ## Futtatás – Részletes build lépések
 
-1) Build pipeline:
-- `uv run courtrankrl build`
-  - Automatikusan lefuttatja a Docling és BM25 lépéseket.
+### 1. Lokális build pipeline
 
-2) Manuális lépések (opcionális):
-- `uv run python src/data_loader/preprocess_documents.py --resume`
-  - Bemenet: `data/raw/` alatti DOCX.
-  - Kimenet: `data/processed/chunks.jsonl` (chunkok minimál metaadatokkal).
+```bash
+uv run courtrankrl build
+```
 
-- `uv run python src/data_loader/build_bm25_index.py`
-  - Kimenet: `data/index/bm25_index.json`.
+**Mit csinál:**
+- Docling parsing: `data/raw/` DOCX → plain text
+- Normalizálás és metadata extraction (court, domain, year)
+- Intelligens chunking (Docling capabilites)
+- BM25S index építés native tokenizer-rel
+- Kimenetek: `data/processed/chunks.jsonl`, `data/index/bm25/bm25s_model/`
 
-3) Embedding generálás (kötelező):
-- Használja a `notebooks/gemma_embedding_runpod.ipynb` notebookot
-  - Bemenet: `data/processed/chunks.jsonl`
-  - Kimenetek: `data/index/faiss_index.bin`, `data/index/chunk_id_map.json`.
+### 2. Cloud FAISS embedding generálás (kötelező)
+
+```bash
+# RunPod GPU-n futtassa: notebooks/gemma_embedding_runpod.ipynb
+# Bemenet: chunks.jsonl
+# Kimenetek: faiss_index.bin, chunk_id_map.json
+# Töltse le lokálisan: data/index/ könyvtárba
+```
+
+### 3. Cloud GRPO training (opcionális)
+
+```bash
+# 1. Slate export lokálisan
+uv run courtrankrl train
+
+# 2. RunPod GPU-n futtassa: notebooks/grpo_train_runpod.ipynb
+# Bemenet: training_slates.jsonl
+# Kimenetek: grpo_policy/ (LoRA adapters + metrics.json)
+```
 
 ## Lekérdezés (hibrid baseline)
 
-- `uv run courtrankrl query "kártérítés szivattyú ügy"`
-  - HybridRetriever: BM25 + FAISS, RRF fúzió.
-  - Kimenet: dokumentum azonosítók listája (határozat számok).
+```bash
+# Alapértelmezett keresés (RRF fusion)
+uv run courtrankrl query "kártérítés szivattyú ügy"
 
-- Opcionális GRPO reranking:
-  - `uv run courtrankrl query "kártérítés szivattyú ügy" --rerank`
-  - Kimenet: GRPO-val újrarangsorolt dokumentum azonosítók.
+# Több találat kérése
+uv run courtrankrl query "szerződéses jog" --top-k 20
 
-**Fontos:** A lekérdezés előtt futtassa a `gemma_embedding_runpod.ipynb` notebookot az embeddingek és FAISS index generálásához.
+# Példa családi jogi ügyre
+uv run courtrankrl query "családi jogi ügy"
+```
 
-Tippek
-- A hibrid visszakeresés google/embeddinggemma-300m modellt használja a lekérdezés embeddelésére.
-- A EmbeddingGemma használatához GPU/MPS szükséges (M3 MacBook Air optimalizálva).
-- A query embedding real-time történik a betöltött EmbeddingGemma modellel.
-- A EmbeddingGemma model csak akkor töltődik be, ha van FAISS index.
-- M3 MacBook Air: MPS (Metal Performance Shaders) használata a GPU gyorsításhoz.
+**HybridRetriever működés:**
+1. Query embedding: EmbeddingGemma-300m (MPS acceleration)
+2. BM25S sparse retrieval: chunk-level → document-level max-score aggregation
+3. FAISS dense retrieval: IndexIVFFlat (100% exact distances, ~9GB RAM for 3M vectors), L2-normalized IP search
+4. Fusion: RRF (Reciprocal Rank Fusion) - robusztus, paraméter-mentes algoritmus
+5. Kimenet: Top-k document ID lista
 
-## RL újrarangsorolás (opcionális PoC)
+**Előfeltétel:** FAISS index létezik (`gemma_embedding_runpod.ipynb`)
 
-- Tanítás (qrels szükséges):
-  - `uv run courtrankrl train`
-  - Megjegyzés: a tréner whitespace‑delimitált qrels fájlt vár. Állítsd a `configs/config.py` `DEV_QRELS_FILE` értékét a megfelelő fájlra, vagy igazítsd a formátumot.
-- Használat kereséskor: a `courtrankrl query` automatikusan próbálja betölteni a policy‑t (`data/models/rl_policy.pth`), és ha elérhető, a jelölteket újrarangsorolja.
+**Megjegyzés:** GRPO reranking cloud-only (agents.md spec). Lokális query csak baseline-t ad vissza.
+
+## GRPO újrarangsorolás (cloud-only, agents.md szerint)
+
+### Slate export (lokálisan)
+```bash
+uv run courtrankrl train
+# Output: data/models/grpo_policy/training_slates.jsonl
+```
+
+### GRPO training (RunPod GPU-n)
+```bash
+# Futtassa: notebooks/grpo_train_runpod.ipynb
+# Qrels formátum: data/qrels/baseline_qrels.tsv
+# - Header: query_id\tdoc_id\trelevance
+# - Doc IDs: chunks.jsonl doc_id mezőből (NEM chunk_id!)
+# - Relevance: {0, 1, 2}
+```
+
+**GRPO konfiguráció (RTX 5090 optimalizált):**
+- Model: Qwen/Qwen3-4B-Instruct-2507 (4-bit) + QLoRA (rank=64, alpha=128, 7 target modules)
+- Dataset: 98 query (teljes), 20 chunk/slate, teljes chunk szöveg
+- Trainer: TRL GRPOTrainer GRPO algoritmus (loss_type="dapo", scale_rewards="batch")
+- Reward: nDCG@10 difference + entropy bonus (0.01), clipping [-1.0, 1.0]
+- Hardware: RTX 5090 - batch_size=2, grad_accumulation=2, 6 generations, 500 steps
+- Training time: ~45-60 perc
+- Output: LoRA adapter weights + metrics.json
+
+**Megjegyzés:** Lokális inference nem támogatott (4B model túl nagy 16GB RAM-hoz).
 
 ## Artefaktumok és elérési utak
 
+### Lokális artifactok
 - Chunks: `data/processed/chunks.jsonl`
-- BM25 index: `data/index/bm25_index.json`
-- FAISS index: `data/index/faiss_index.bin` (generálva `gemma_embedding_runpod.ipynb`-ban)
-- FAISS ID‑map: `data/index/chunk_id_map.json` (generálva `gemma_embedding_runpod.ipynb`-ban)
-- RL policy: `data/models/rl_policy.pth`
+- Processed docs: `data/processed/processed_docs.jsonl`
+- BM25S index: `data/index/bm25/bm25s_model/` (corpus, vocab, params, indices)
+- BM25 stats: `data/index/bm25/bm25_stats.json`
+- BM25 chunk IDs: `data/index/bm25/chunk_ids.json`
+- Token cache: `data/index/bm25/token_cache/` (token_ids.npy, vocab.json)
 
-## Konfiguráció (részletek a `configs/config.py` fájlban)
+### Cloud-ról letöltendő artifactok
+- FAISS index: `data/index/faiss_index.bin` (gemma_embedding_runpod.ipynb)
+- Chunk ID map: `data/index/chunk_id_map.json` (gemma_embedding_runpod.ipynb)
+- GRPO adapters: `data/models/grpo_policy/` (grpo_train_runpod.ipynb)
+- GRPO metrics: `data/models/grpo_policy/metrics.json` (grpo_train_runpod.ipynb)
 
-- Chunkolás: méret, átfedés, per‑dokumentum limit.
-- BM25: `BM25_K1`, `BM25_B`.
-- EmbeddingGemma: `EMBEDDING_GEMMA_MODEL_NAME`, `EMBEDDING_GEMMA_DIMENSION`.
-- Hybrid: `TOP_K_BASELINE`, `RRF_K`.
-- RL: tanulási ráta, epochok, batch méret, rejtett dimenzió.
+### Qrels
+- Format: `data/qrels/baseline_qrels.tsv` (TSV, header, doc_id-k)
+
+## Konfiguráció (`configs/config.py`)
+
+### Retrieval
+- **BM25S**: `BM25_K1=1.5`, `BM25_B=0.75`, `BM25_USE_NUMBA`, `BM25_THREADS`
+- **Hybrid**: `TOP_K_BASELINE=100`, `TOP_K_RERANKED=20`, `RRF_K=60`
+- **FAISS**: `FAISS_NLIST_MIN=64`, `FAISS_NLIST_MAX=1024`
+
+### Memory
+- **Batch sizes**: `CHUNK_WRITE_BATCH_SIZE=200`
+- **Soft limit**: `MEMORY_SOFT_LIMIT_BYTES=12GB`
+
+### GRPO (RTX 5090 cloud-only)
+- **Slate config**: `GRPO_SLATE_SIZE=20` (chunk-based)
+- **LoRA config**: `GRPO_LORA_RANK=64`, `GRPO_LORA_ALPHA=128`
+- **Training config**: `GRPO_MAX_STEPS=500`, `GRPO_BATCH_SIZE=2`, `GRPO_NUM_GENERATIONS=6`
+- **Paths**: `SLATE_EXPORT_PATH`, `QRELS_FILE`
 
 ## Hibaelhárítás
 
-- FAISS index hiányzik: futtassa a `gemma_embedding_runpod.ipynb` notebookot az embeddingek generálásához.
-- Memória: növeld fokozatosan a batch méretet; OOM esetén csökkentse a batch size-ot.
-- GPU: a EmbeddingGemma embedding generáláshoz GPU szükséges.
+### Lokális problémák
+- **FAISS index hiányzik**: Futtassa `gemma_embedding_runpod.ipynb` RunPod-on, töltse le az artifactokat
+- **MPS acceleration**: M3 MacBook Air automatikusan használja, ha elérhető
+- **BM25 index build lassú**: Állítsa `BM25_USE_NUMBA=True` és `BM25_THREADS=-1`
+- **Memória hiba**: Csökkentse `CHUNK_WRITE_BATCH_SIZE` vagy `sample_size` értékét
+
+### Cloud problémák
+- **CUDA OOM (embedding)**: Csökkentse `BATCH_SIZE` értékét 512→256→128
+- **CUDA OOM (GRPO)**: Növelje `GRADIENT_ACCUMULATION_STEPS` 4→8
+- **Slow training**: Ellenőrizze Flash Attention 2 aktiválását
+- **Qrels format error**: Ellenőrizze TSV header-t és doc_id-kat (nem chunk_id!)
+
+## Szakdolgozati elemzés
+
+```bash
+# Adatelemző notebook futtatása
+jupyter notebook notebooks/data_analysis.ipynb
+```
+
+**Tartalom:**
+- Szöveghossz és struktúra elemzés (chunk/document szint)
+- Metaadat eloszlások (bíróság, jogterület, év)
+- Szókészlet és nyelvi jellemzők (top words, Zipf-törvény)
+- FAISS embedding elemzés (norma, dimenzió-szintű stats)
+- Professzionális ábrák és táblázatok
 
 ## Nyelvi irányelv
 
-- A projekt minden felhasználó felé megjelenő kimenete magyar nyelvű.
-- A lekérdezés kimenete kizárólag azonosítókból álló lista (doc_id), magyarázó szöveg nélkül.
+- **agents.md és README.md**: Angol
+- **Minden más (CLI, notebook output, kommentek)**: Magyar
+- **Query output**: Csak doc_id lista, magyarázó szöveg nélkül
 
-—
+---
 
-Készítette: Zelenyiánszki Máté
-Implementáció: Python, Hugging Face Transformers, FAISS, PyTorch
+**Készítette:** Zelenyiánszki Máté  
+**Implementáció:** Python 3.11, Hugging Face (EmbeddingGemma, Qwen3), FAISS, BM25S, TRL, Docling  
+**Optimalizálva:** M3 MacBook Air 16GB RAM (lokális), RunPod GPU (cloud)

@@ -4,6 +4,10 @@ Project Goal
 
 Build a compute‑light, locally executable (M3 Macbook Air 16 GB RAM) retrieval pipeline for Hungarian court decisions. The system must use a real embedding model and demonstrate measurable ranking improvements via GRPO‑style RL reranking. Keep the solution minimal, reproducible, and easy to extend.
 
+Agent Summaries
+
+Whenever an AI agent creates a summary of the proposed changes, put that files into the /CourtRankRL/data/Agent summaries folder. Read the necessarry docs from that folder.
+
 Out of Scope
 - No PDF parsing.
 - No stemming/lemmatization.
@@ -22,96 +26,99 @@ Outputs
 - Query result: top‑k list of identifiers only (baseline and reranked).
 
 High‑Level Pipeline
-1) Ingestion with Docling
-- Docling parses DOCX to plain text.
-- Minimal normalization (whitespace, control characters); keep legal clauses.
-- Metadata extraction: court, domain, year, case identifier from filename/folders.
+1) Ingestion & Chunking
+- **Parsing**: Use Docling to convert DOCX court decisions to plain text with minimal normalization (whitespace, control characters); preserve legal clause structure.
+- **Metadata extraction**: Extract court, domain, year, case identifier from directory structure and filenames.
+- **Chunking**: Leverage Docling's native chunking capabilities for automatic segmentation with appropriate overlap; preserve all metadata on each chunk.
+- **Output**: `chunks.jsonl` with complete document and chunk metadata.
 
-2) Chunking
-- Let Docling decide on chunking and overlap size, use it's capabilites for that.
-- Preserve metadata on chunks.
-- Output: chunks JSONL.
+2) Indexing
+- **BM25**: Use BM25s library (https://bm25s.github.io/) with native tokenizer; apply case-insensitive tokenization (lowercase corpus and queries for Hungarian); persist token IDs, vocabulary, and statistics alongside index for fast rebuilds without re-tokenization.
+- **FAISS Embedding Generation** (Cloud GPU): Use `google/embeddinggemma-300m` (HF token from .env) via **Sentence Transformers library** (>=5.1.0); CRITICAL: EmbeddingGemma requires Sentence Transformers (not AutoModel from transformers); use `model.encode(texts, prompt_name="document", normalize_embeddings=True)` which automatically adds prompt "title: none | text: {chunk}", performs mean pooling with attention mask, and L2-normalizes embeddings; model max_seq_length is 2048 tokens (auto-handled); process chunks in batches on RTX 5090 GPU; output consolidated `embeddings.npy` (float32, L2-normalized) and `embedding_chunk_ids.json` for artifact download. IMPORTANT: Do NOT use transformers.AutoModel - it produces zero-vector embeddings that break FAISS indexing.
+- **FAISS Index Building** (Local/Cloud): Load pre-computed embeddings from artifacts; use OPQ64_256,IVF65536,PQ64x4fsr (https://github.com/facebookresearch/faiss/wiki/Guidelines-to-choose-an-index) for optimal memory/accuracy balance (product quantization for memory efficiency); configure nlist=65536 for 1M-10M vectors, nprobe=256-1024 for recall optimization; GPU-accelerated training on RunPod, but index now fits in local memory (M3 MacBook Air) for hybrid retrieval; separate notebooks enable faster iteration (embedding generation ~1-2 hours, index building ~5-10 minutes).
+- **ID mapping**: Maintain FAISS row index ↔ chunk_id mapping in separate .npy file for efficient storage and fast loading (3M+ mappings esetén JSON túl lassú és memóriaigényes).
 
-3) Indexing
-- BM25: use the BM25s library (https://bm25s.github.io/, https://huggingface.co/blog/xhluca/bm25s) with its native tokenizer; cache token ids, vocabulary, and length metadata alongside the bm25s index files so rebuilds do not re-tokenize the corpus.
-- FAISS: HF EmbeddingGemma - https://huggingface.co/google/embeddinggemma-300m (HF token from .env); L2‑normalized embeddings with IP metric; adaptive IVF training with a train buffer; `nlist` matched to sample size; add pending batches post‑training.
-- ID mapping: FAISS row index ↔ doc_id in a separate file.
+3) Hybrid Retrieval (baseline)
+- **Query processing**: Lowercase and normalize whitespace to match BM25 preprocessing; embed with EmbeddingGemma via Sentence Transformers using `model.encode(query, prompt_name="query", normalize_embeddings=True)` which automatically adds prompt "task: search result | query: {query}" and L2-normalizes output.
+- **Retrieval**: Obtain top-K candidates from both BM25 (chunk-level via bm25s) and FAISS (dense similarity); aggregate chunk scores to document level using max-score strategy.
+- **Fusion**: Apply RRF (Reciprocal Rank Fusion) to combine BM25 and FAISS rankings in a robust, parameter-free manner.
+- **Output**: Top-k document IDs with per-source score features retained for downstream RL training.
 
-4) Hybrid Retrieval (baseline)
-- Embed the query with the same model.
-- Retrieve top-K candidates from BM25 (document-level scoring via bm25s) and FAISS.
-- Fuse via RRF or z‑score weighted sum (handle zero variance).
-- Aggregate chunk-level results to document level, keep per-source score features, output top-k list of Document IDs (baseline).
+4) RL Reranking (GRPO‑style)
+- **Slate preparation**: Use chunk-level retrieval to create slates with top-scoring chunks from BM25 and FAISS (not doc-level aggregation); each slate contains the most relevant chunks as determined by retrieval scores; include full chunk text (~500-800 chars, not preview), metadata (court, domain, year), chunk_id, doc_id, and retrieval scores; map doc-level relevance from qrels to chunks; format as structured text (not JSON) for clarity; the slate order represents the baseline fusion ranking.
+- **Policy model**: Fine-tune `Qwen/Qwen3-4B-Instruct-2507` using QLoRA adapters (4-bit quantization, moderate LoRA rank) for document scoring via autoregressive generation; model receives full chunk context to understand relevance reasoning; use groupwise softmax over candidate scores to produce reranking distribution.
+- **Training framework**: Use TRL `GRPOTrainer` with GRPO algorithm configuration: `loss_type="dapo"` (eliminates length bias), `scale_rewards="batch"` (robust normalization), `mask_truncated_completions=True` (stability), `importance_sampling_level="sequence"` (GSPO-style), `kl_coef=0.0` (no KL penalty); configure for RTX 5090 GPU (24GB VRAM) with optimized batch settings, gradient accumulation, and multiple generations per prompt; training completes within 1 hour.
+- **Reward function**: TRL-compatible signature `(completions, prompts, **kwargs)`; extract query_id from prompt via regex, lookup slate metadata in global dict; baseline order is the slate's initial fusion ranking (index 0,1,2...); compute nDCG@10 difference between baseline fusion order and policy order as core reward; add small entropy bonus for exploration; assign negative reward for parse failures (not zero); clip rewards to stable range for gradient stability.
+- **Dataset strategy**: Split full 98-query dataset into train/eval sets (80/20) with shuffled deterministic seed for reproducibility; each query annotated with 20 documents in qrels for sufficient supervision signal.
+- **Outputs**: Save LoRA adapter weights and tokenizer to `data/models/grpo_policy/`; emit reranked document IDs per query; log nDCG@10 improvements to `metrics.json`.
 
-5) RL Reranking (GRPO‑style)
-- Candidate context: for every slate element collect document text (trimmed to config length), document metadata (court, domain, year), RRF/BM25/FAISS scores, and rank positions; surface these as structured JSON snippets embedded in the prompt alongside the Hungarian query.
-- Slate preparation: merge the top‑`k` BM25 and FAISS hits into a fixed-length slate per query, pad with neutral placeholders when necessary, and attach ground-truth relevance labels pulled from the qrels file.
-- Policy model: fine-tune `Qwen/Qwen3-4B-Instruct-2507` with QLoRA adapters (bf16 compute, 4-bit weights) so it can score slate items via autoregressive logits; groupwise softmax over candidate scores yields the reranking distribution.
-- Trainer: run Hugging Face TRL `GRPOTrainer` with group size matched to the slate length, KL penalty disabled, learning-rate warmup + gradient clipping, and per-step logging of Hungarian status messages; rewards are computed on-device from the provided relevance labels.
-- Reward shaping: evaluate nDCG@10 for both the baseline order and the policy's sampled order at document level, use their difference as the reward, clamp negative rewards when no relevant documents exist, and default to zero if the slate lacks annotations.
-- Regularization: apply entropy bonus and normalize rewards by the query-level variance (fallback 1.0) to keep QLoRA training stable on limited VRAM.
-- Outputs: save LoRA adapter weights and tokenizer configs under `data/models/grpo_policy/`, emit reranked identifier lists per query, and log baseline vs. reranked nDCG/MAP metrics to `data/models/grpo_policy/metrics.json`.
-
-GRPO Implementation Plan (TRL-based)
-- Environment setup: install/update `trl`, `transformers`, `peft`, and `bitsandbytes`; keep configs ready for CPU/MPS inference while enabling bf16 + 4bit QLoRA training on cloud GPUs without altering the CLI surface.
-- Data pipeline: reuse hybrid retrieval exports to materialize per-query candidate slates and save them as JSONL batches that the cloud GRPO notebook can ingest (IDs stay in sync with `chunks.jsonl` and qrels).
-- Model preparation: load `Qwen/Qwen3-4B-Instruct-2507` with `load_in_4bit=True`, attach QLoRA adapters (rank/alpha set in config), and register reward/eval prompts that stay within the model’s context window.
-- Cloud training notebook: create `notebooks/grpo_train_runpod.ipynb` that loads the slate JSONL, configures `GRPOTrainer` (group size = slate length, custom nDCG-based `reward_fn`), streams Hungarian progress logs, and checkpoints adapters into `/workspace/artifacts/grpo_policy/` for download.
-- Artifact handover: after cloud training, download the adapter weights, tokenizer files, and metrics JSON into `data/models/grpo_policy/` locally; commit to a deterministic filename schema for seamless loading.
-- Local inference integration: update `GRPOReranker` so it fetches the downloaded adapters, runs forward passes on CPU/MPS with low-memory settings, and gracefully falls back to baseline ordering if artifacts are missing.
-- Portability: document the Runpod workflow (environment variables, mixed-precision flags, artifact sync back to the repo) to ensure the same policy runs locally post-training.
-- Baseline compatibility: no changes required for ingestion, chunking, or hybrid retrieval modules (`src/data_loader/build_bm25_index.py`, `src/search/hybrid_search.py`); only the RL layer consumes the new artifacts.
-- CLI alignment: adapt `src/cli.py` so training invocations dispatch to the cloud notebook (artifact sync) and querying loads the LoRA adapters before reranking, while maintaining Hungarian console output.
-- Slate export: add a utility that serializes baseline candidate slates (document text + metadata + scores) into JSONL for GRPO training, ensuring document IDs stay aligned with qrels and FAISS mappings.
-- Qrels consistency: harmonize configuration (`configs/config.py`) with the canonical `data/qrels/baseline_qrels.tsv` path to avoid mismatched formats between CLI and notebook.
+GRPO Implementation Plan (TRL-based, RTX 5090 optimized, chunk-based)
+- **Environment**: Cloud training on RTX 5090 GPU (24GB VRAM) using `trl`, `transformers`, `peft`, `bitsandbytes`; local M3 MacBook Air for baseline retrieval and evaluation only.
+- **Data preparation**: Export chunk-level candidate slates from hybrid retrieval as JSONL; use top-scoring chunks (not doc-level aggregation) to provide relevant context; load full chunk text from `chunks.jsonl` for each candidate; include chunk_id, doc_id, metadata, retrieval scores; map doc-level relevance from qrels; maintain ID consistency across pipeline.
+- **Model configuration**: Load `Qwen/Qwen3-4B-Instruct-2507` with 4-bit quantization; attach QLoRA adapters targeting all attention and MLP projection layers (q,k,v,o,gate,up,down); use moderate LoRA rank for quality/memory balance.
+- **Prompt strategy**: Structured text format (not JSON) displaying chunk-level candidates with full text (~500-800 chars); include doc_id, chunk_id, court/domain/year, BM25/FAISS scores; format for clarity while accepting higher token count (~2000-3000) for meaningful context.
+- **Training notebook**: `notebooks/grpo_train_runpod.ipynb` loads chunk-based slate JSONL, configures `GRPOTrainer` with best-practice parameters (GRPO algorithm via `loss_type="dapo"`, batch-level reward scaling, sequence-level importance sampling, disabled KL penalty), implements TRL-compatible reward function with regex-based query_id extraction and global slate lookup, performs shuffled train/eval split (80/20, seed=42), logs Hungarian progress messages, checkpoints to `/workspace/artifacts/grpo_policy/`.
+- **Reward computation**: Extract query_id from prompt via regex (robust parsing), retrieve slate metadata from global dict, baseline order is slate's fusion ranking [0,1,2,...], compute nDCG@10 for both baseline and policy orderings, use difference as primary signal, add exploration bonus, assign negative penalty for parse failures, clip to stable range.
+- **Hyperparameters**: Configure for RTX 5090 capacity with appropriate batch size, gradient accumulation, generation count, learning rate, warmup schedule; higher token count (~2000-3000/prompt) requires adjusted batch settings; aim for complete training within reasonable time (under 1 hour) while maintaining quality.
+- **Resource management**: Memory footprint includes quantized model, LoRA parameters, optimizer state, activation buffers, GRPO trajectory storage, longer prompts (~2-3× baseline); fits within 24GB VRAM with appropriate batch sizing.
+- **Deployment strategy**: Training and inference occur on cloud; download metrics and evaluation results to `data/models/grpo_policy/` for local analysis; adapter weights remain on cloud environment.
+- **Pipeline integration**: GRPO layer operates independently; slate preparation uses chunk-level retrieval (via `get_last_chunk_scores()`) and full text loading (via `_load_chunk_texts()`); no modifications to preprocessing, BM25 indexing, or base retrieval modules.
+- **Qrels format**: Ensure qrels contains doc_id values matching `chunks.jsonl` structure; doc-level relevance mapped to chunk-level slates; provide sufficient query coverage for train/eval split.
 
 BM25S Implementation Notes
-- Tokenization: rely on `bm25s.tokenize` with configurable stopword handling (default none for Hungarian); persist the returned token-id structures for reuse.
+- Tokenization: **case-insensitive** - lowercase corpus text before tokenization, lowercase queries before search; rely on `bm25s.tokenize` with configurable stopword handling (default none for Hungarian); persist the returned token-id structures for reuse.
 - Index persistence: always call `BM25.save()` into `data/index/bm25/`, store `doc_ids.json` plus `bm25_stats.json` (total_docs, avg_length, histogram) for downstream consumers.
 - Corpus structure: BM25S stores corpus documents as `{'id': index, 'text': chunk_id}` dictionaries; retrieval results must extract chunk_id from the 'text' field, not the 'id' field (which is just a numeric index).
 - Search results: the `search()` method returns chunk_id strings that are later aggregated to document-level doc_id identifiers via suffix stripping (e.g., "doc_0" → "doc").
 - Scoring utilities: prefer `get_scores` / `get_scores_from_ids` to avoid redundant retrieval when exporting features for GRPO.
 - Performance: allow enabling `activate_numba_scorer()` and thread count tuning via CLI flags for local CPU optimization on M3 hardware.
 
-6) CLI Workflows
-- Build: Docling parse → normalization → chunking → BM25.
-- Embedding: Generate FAISS index using gemma_embedding_runpod.ipynb.
-- Query: embed → BM25+FAISS → document aggregation → fusion → top‑k document ID list (optional RL rerank).
-- RL Train: load qrels → baseline candidates → features → GRPO training → save policy → evaluate.
+5) CLI Workflows
+- **Build** (Local): Docling parsing → text normalization → chunking → BM25 index creation with token cache.
+- **Embedding Generation** (Cloud): Notebook (`gemma_embedding_runpod.ipynb`) generates embedding vectors from chunks using EmbeddingGemma via Sentence Transformers library (>=5.1.0) with document prompts (`prompt_name="document"`) on RTX 5090 GPU; outputs consolidated `embeddings.npy` (float32, L2-normalized) and `embedding_chunk_ids.json` artifacts for download.
+- **FAISS Index Building** (Local/Cloud): Notebook (`faiss_index_builder.ipynb`) loads pre-computed embeddings from artifacts → builds OPQ64_256,IVF65536,PQ64x4fsr index → saves `faiss_index.bin` and `chunk_id_map.npy`; runs locally on M3 MacBook Air or cloud GPU for faster training.
+- **Hybrid Retrieval** (Local): Script (`scripts/hybrid_retrieval.py`) runs BM25+FAISS hybrid search on query list → RRF fusion → saves pipeline results; memory-optimized for M3 MacBook Air (16GB RAM) with PQ-compressed FAISS index.
+  - Note: `chunk_id_map.npy` is loaded via NumPy with `allow_pickle=True`. Both array-based (row-indexed `np.ndarray`) and dict-based (`{row_index: chunk_id}`) formats are supported for compatibility.
+- **Qrels Generation** (Local): Script (`scripts/qrels_generation.py`) creates qrels template from retrieval results → saves TSV for manual annotation; runs locally after hybrid retrieval.
+- **RL Training** (Cloud): Notebook (`grpo_train_runpod.ipynb`) trains GRPO policy from slates → saves adapter weights and metrics on RTX 5090 GPU.
+- **Evaluation** (Local): Notebook (`baseline_evaluation.ipynb`) computes nDCG@10 metrics from qrels and results.
 
 Relevance Judgments (Qrels)
-- Location: store in `data/qrels/baseline_qrels.tsv` and keep the filename stable for the RL training CLI.
-- Format: tab-separated with a header row `query_id\tdoc_id\trelevance`; use numeric `query_id` values, document identifiers that match the `doc_id` field in `chunks.jsonl`, and relevance grades in {0,1,2}.
-- Coverage: provide at least 50 unique queries, each with three or more annotated documents; ensure every relevant document references the same underlying document IDs used elsewhere in the pipeline.
-- Consistency: maintain UTF-8 encoding, no BOM, Unix newlines, and keep the file sorted first by `query_id`, then by descending `relevance` to simplify deterministic loading.
+- **Location**: `data/qrels/baseline_qrels.tsv` with stable filename for pipeline consistency.
+- **Format**: Tab-separated with header `query_id\tdoc_id\trelevance`; query_id as Hungarian query text, doc_id matching `chunks.jsonl` structure (document-level, not chunk-level), relevance grades in {0,1,2}.
+- **Coverage**: Minimum 50 unique queries with multiple annotated documents each; sufficient for train/eval split and statistical significance.
+- **Consistency**: UTF-8 encoding, Unix newlines, sorted by query_id and relevance for deterministic loading; maintain document ID alignment across all pipeline components.
 
 Acceptance Criteria
-- Always use the full dataset for the final pipeline.
-- Build produces: chunks JSONL, BM25 index.
-- Notebook produces: FAISS index and ID mapping.
-- Query returns: fused top‑k list of document IDs (e.g., 0302-G_20416_2019_11).
-- RL training saves a policy and improves metrics vs baseline (e.g., nDCG@10 at document level).
-- A real embedding model is used (HF token from .env), not a stub.
+- **Dataset scale**: Use full corpus and complete qrels dataset (98 queries) for final pipeline and evaluation.
+- **Build outputs**: Chunks JSONL, BM25 index with token cache, document metadata accessible for slate preparation.
+- **Cloud outputs**: FAISS OPQ64_256,IVF65536,PQ64x4fsr with efficient .npy ID mapping (memory-optimized), GRPO policy adapters with metrics.
+- **Query functionality**: Return fused top-k document IDs (e.g., `0302-G_20416_2019_11`) from hybrid retrieval locally using memory-optimized FAISS index.
+- **RL learning signal**: Demonstrate measurable improvement (average nDCG@10 gain ≥ 0.03 on 60%+ of eval queries) or consistent reward increase over training.
+- **Model requirements**: Use real EmbeddingGemma model (from .env HF token) with no fallback; execute baseline retrieval locally, RL training on cloud.
 
-Pitfalls
-- Always L2‑normalize embeddings (required for FAISS with IP).
-- Handle zero variance in z‑score normalization.
-- Maintain correct FAISS row ↔ doc_id ↔ relevance mapping at document level.
-- Return 0 for nDCG when no relevant results exist.
-- Keep document aggregation, top‑K, fusion, and RL hyperparameters configurable.
-- Ensure FAISS index is generated using gemma_embedding_runpod.ipynb before querying.
+Critical Requirements & Pitfalls
+- **EmbeddingGemma library**: CRITICAL - MUST use Sentence Transformers library (>=5.1.0), NOT AutoModel from transformers; EmbeddingGemma requires specific prompt formatting ("title: none | text: " for documents, "task: search result | query: " for queries), mean pooling with attention mask, and proper L2 normalization, all handled automatically by Sentence Transformers; using AutoModel produces zero-vector embeddings that break retrieval and cause FAISS training failures; model does NOT support float16, use float32 or bfloat16.
+- **FAISS embeddings**: Always L2-normalize before indexing (required for inner product metric); Sentence Transformers handles this automatically with `normalize_embeddings=True`.
+- **ID consistency**: Maintain correct mappings across FAISS row indices ↔ chunk_id ↔ doc_id ↔ qrels relevance at document level throughout pipeline.
+- **Metric edge cases**: Return 0 for nDCG when no relevant documents exist in results.
+- **Baseline configuration**: RRF (Reciprocal Rank Fusion) provides robust, parameter-free baseline for GRPO comparison; no training required.
+- **Build dependencies**: Embedding vectors generated via `gemma_embedding_runpod.ipynb` (cloud, faster training), FAISS index built via `faiss_index_builder.ipynb` (local/cloud); hybrid retrieval and qrels generation now run locally; GRPO training occurs on cloud environment only.
+- **Hyperparameter flexibility**: Keep document aggregation strategies, top-K values, and RL training parameters configurable for experimentation.
 
 Configuration & Execution
-- Fully local execution; EmbeddingGemma model for document and query embeddings.
-- Optimized for M3 MacBook Air with MPS (Metal Performance Shaders) acceleration.
-- Centralized configuration in `configs/config.py`; values tuned for PoC.
-- Reproducible outputs; simple JSON/JSONL artifacts.
+- **Local execution**: M3 MacBook Air (16GB RAM) runs document preprocessing (Docling parsing, chunking), BM25 index building (CPU-only, no GPU needed), hybrid retrieval (`hybrid_retrieval.py`), qrels generation (`qrels_generation.py`), and evaluation (metrics computation from qrels); hybrid retrieval now possible locally with PQ-compressed FAISS index (~2-3GB memory usage fits within 16GB RAM).
+- **Cloud execution**: RTX 5090 GPU (24GB VRAM) for embedding generation (`gemma_embedding_runpod.ipynb`) and GRPO training (`grpo_train_runpod.ipynb`) via RunPod notebooks; GPU acceleration for embedding generation (faster training) and RL training; FAISS index building and hybrid retrieval now run locally.
+- **Configuration**: Centralized in `configs/config.py` with values tuned for PoC scale; all hyperparameters configurable for experimentation.
+- **Artifacts**: Simple JSON/JSONL format for reproducibility; cloud notebooks export results for local analysis; adapter weights remain on cloud.
 
-Data Formats (outline)
-- chunks.jsonl: {chunk_id, doc_id, text, court, domain, year, source_path}
-- bm25_index.json: minimal postings and statistics structure
-- faiss_index.bin: FAISS index file
-- doc_id_map.json: FAISS row index → doc_id
+Data Formats
+- **chunks.jsonl**: One chunk per line with fields: `{chunk_id, doc_id, text, court, domain, year, source_path}`
+- **BM25 artifacts**: bm25s model directory (scores/indices/indptr/vocab/params), chunk_id list, token statistics, optional token cache
+- **Embedding artifacts**: `embeddings.npy` (float32, L2-normalized vectors generated via Sentence Transformers), `embedding_chunk_ids.json` (chunk_id order matching embedding rows)
+- **FAISS artifacts**: `faiss_index.bin` (OPQ64_256,IVF65536,PQ64x4fsr binary), `chunk_id_map.npy` (row index → chunk_id mapping in efficient .npy format)
+- **Training slates**: JSONL with chunk-level candidates per query: `{query_id, slate: [{chunk_id, doc_id, bm25_score, faiss_score, relevance, court, domain, year, text (full chunk)}]}`; slate order represents baseline fusion ranking; chunk_id mapping loaded from .npy file for efficiency
+- **Results**: Document ID lists (baseline and reranked), metrics JSON with nDCG@10 comparisons
 
 Language Policy
 - This file (AGENTS.md) must be written in English only.

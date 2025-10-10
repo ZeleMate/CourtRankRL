@@ -14,6 +14,7 @@ INDEX_DIR = DATA_DIR / "index"
 MODELS_DIR = DATA_DIR / "models"
 
 QRELS_DIR = DATA_DIR / "qrels"
+
 for directory in [RAW_DATA_DIR, PROCESSED_DATA_DIR, INDEX_DIR, MODELS_DIR, QRELS_DIR]:
     directory.mkdir(parents=True, exist_ok=True)
 
@@ -40,8 +41,11 @@ BM25_INDEX_PATH = INDEX_DIR / "bm25_index.json"
 BM25_STATS_PATH = BM25_INDEX_DIR / "bm25_stats.json"
 BM25_TOKEN_CACHE_DIR = BM25_INDEX_DIR / "token_cache"
 FAISS_INDEX_PATH = INDEX_DIR / "faiss_index.bin"
-CHUNK_ID_MAP_PATH = INDEX_DIR / "chunk_id_map.json"
+CHUNK_ID_MAP_PATH = INDEX_DIR / "chunk_id_map.npy"
 DOC_ID_MAP_PATH = INDEX_DIR / "doc_id_map.json"
+
+#EmbeddingGemma Model
+EMBEDDING_GEMMA_MODEL_NAME = "google/embeddinggemma-300m"
 
 # GRPO Policy Model
 GRPO_POLICY_DIR = MODELS_DIR / "grpo_policy"
@@ -51,6 +55,17 @@ GRPO_METRICS_PATH = GRPO_POLICY_DIR / "metrics.json"
 
 # Slate Export for GRPO Training (agents.md szerint)
 SLATE_EXPORT_PATH = GRPO_POLICY_DIR / "training_slates.jsonl"
+
+# GRPO Training Configuration (chunk-based, RTX 5090 optimized)
+GRPO_SLATE_SIZE = 20  # 20 chunks/query (agents.md spec)
+GRPO_LORA_RANK = 64  # LoRA rank (agents.md spec)
+GRPO_LORA_ALPHA = 128  # 2 × rank
+GRPO_BATCH_SIZE = 2  # RTX 5090 optimized
+GRPO_GRAD_ACCUMULATION = 2  # Effective batch = 4
+GRPO_MAX_STEPS = 500  # ~5 epochs for 98 queries
+GRPO_NUM_GENERATIONS = 6  # RTX 5090 optimized (vs 4)
+GRPO_LEARNING_RATE = 1e-5
+GRPO_WARMUP_STEPS = 50
 
 # Cloud Training Notebook
 GRPO_TRAIN_NOTEBOOK = PROJECT_ROOT / "notebooks" / "grpo_train_runpod.ipynb"
@@ -83,6 +98,12 @@ FAISS_NLIST_MIN = 64
 FAISS_NLIST_MAX = 1024
 FAISS_TRAIN_POINTS_PER_CENTROID = 40
 FAISS_TRAIN_MAX_POINTS = 200_000
+
+# FAISS nprobe (search-time parameter)
+# KRITIKUS: IndexIVFFlat default nprobe=1 → ROSSZ RECALL!
+# Agents.md szerint: NPROBE_TARGET = 64 (optimal for nlist=16384, ~0.4% of clusters)
+# Higher nprobe → better recall but slower search
+FAISS_NPROBE = 64  # Optimal recall/speed tradeoff for production (agents.md spec)
 
 # --- File Extensions (DOCX only) ---
 SUPPORTED_TEXT_EXTENSIONS = ['.docx', '.DOCX']

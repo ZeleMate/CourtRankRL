@@ -1,4 +1,8 @@
 {
+  "include": [
+    "src",
+    "configs"
+  ],
   "exclude": [
     "**/__pycache__",
     "**/.venv",
@@ -6,6 +10,17 @@
     "**/.vscode",
     "**/node_modules",
     "**/dist",
-    "**/build"
-  ]
+    "**/build",
+    "notebooks/**",
+    "**/*.ipynb",
+    "data/**"
+  ],
+  "reportMissingImports": true,
+  "reportMissingTypeStubs": false,
+  "reportUnknownMemberType": false,
+  "reportUnknownVariableType": false,
+  "reportUnknownArgumentType": false,
+  "pythonVersion": "3.11",
+  "typeCheckingMode": "basic",
+  "extraPaths": []
 }
