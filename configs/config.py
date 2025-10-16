@@ -56,16 +56,24 @@ GRPO_METRICS_PATH = GRPO_POLICY_DIR / "metrics.json"
 # Slate Export for GRPO Training (agents.md szerint)
 SLATE_EXPORT_PATH = GRPO_POLICY_DIR / "training_slates.jsonl"
 
-# GRPO Training Configuration (chunk-based, RTX 5090 optimized)
+# GRPO Training Configuration (chunk-based, RTX 5090 optimized, Unsloth-accelerated)
 GRPO_SLATE_SIZE = 20  # 20 chunks/query (agents.md spec)
 GRPO_LORA_RANK = 64  # LoRA rank (agents.md spec)
 GRPO_LORA_ALPHA = 128  # 2 × rank
-GRPO_BATCH_SIZE = 2  # RTX 5090 optimized
-GRPO_GRAD_ACCUMULATION = 2  # Effective batch = 4
+
+# Unsloth + vLLM optimizations:
+# - Batch 4 (vs 2): 50% memory savings from Unsloth gradient checkpointing
+# - Generations 10 (vs 6): vLLM 2-3x faster inference
+# - Effective batch 8, 40 generations/step (vs 4 batch, 12 gen/step)
+# - Training time: 30-45 min (vs 1 hour)
+GRPO_BATCH_SIZE = 4  # RTX 5090 + Unsloth optimized (2 → 4)
+GRPO_GRAD_ACCUMULATION = 2  # Effective batch = 8
 GRPO_MAX_STEPS = 500  # ~5 epochs for 98 queries
-GRPO_NUM_GENERATIONS = 6  # RTX 5090 optimized (vs 4)
+GRPO_NUM_GENERATIONS = 10  # Unsloth + vLLM optimized (6 → 10)
 GRPO_LEARNING_RATE = 1e-5
 GRPO_WARMUP_STEPS = 50
+GRPO_MAX_SEQ_LENGTH = 8192  # Context window for chunk-based slates (20×640char + metadata ≈ 5-6k tokens)
+GRPO_GPU_MEMORY_UTIL = 0.8  # vLLM memory utilization
 
 # Cloud Training Notebook
 GRPO_TRAIN_NOTEBOOK = PROJECT_ROOT / "notebooks" / "grpo_train_runpod.ipynb"
