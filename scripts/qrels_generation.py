@@ -47,30 +47,30 @@ if not INPUT_PATH.exists():
 
 print("\n✅ Konfiguráció kész")
 
-# === Retrieval Eredmények Betöltése ===
+# === Retrieval Eredmények Betöltése (pandas optimalizált) ===
 print("\n" + "="*60)
 print("📥 RETRIEVAL EREDMÉNYEK BETÖLTÉSE")
 print("="*60)
 
 results: Dict[str, List[str]] = {}
 
-with open(INPUT_PATH, 'r', encoding='utf-8') as f:
-    for line_num, line in enumerate(f, 1):
-        if not line.strip():
-            continue
-
-        try:
-            result = json.loads(line)
-            query = result.get('query', '')
-            doc_ids = result.get('doc_ids', [])
-
-            if query and doc_ids:
-                results[query] = doc_ids
-        except json.JSONDecodeError as e:
-            print(f"⚠️ JSON hiba a {line_num}. sorban: {e}")
-            continue
-
-print(f"✅ {len(results)} query betöltve")
+try:
+    # pandas.read_json() gyorsabb mint kézi json.loads() parsing (agents.md szerint)
+    import pandas as pd
+    df_results = pd.read_json(INPUT_PATH, lines=True, encoding='utf-8')
+    
+    # Dict konverzió
+    for _, row in df_results.iterrows():
+        query = row.get('query', '')
+        doc_ids = row.get('doc_ids', [])
+        if query and doc_ids:
+            results[query] = doc_ids
+    
+    print(f"✅ {len(results)} query betöltve")
+except (ValueError, FileNotFoundError) as e:
+    print(f"❌ Hiba a retrieval eredmények betöltése során: {e}")
+    print("   Futtasd a hybrid_retrieval.py scriptet először!")
+    sys.exit(1)
 
 # Első néhány query kiírása
 print("\nPélda query-k (első 3):")

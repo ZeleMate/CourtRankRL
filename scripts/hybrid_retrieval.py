@@ -34,6 +34,11 @@ from sentence_transformers import SentenceTransformer
 import bm25s
 from huggingface_hub import login
 from dotenv import load_dotenv
+from ranx import Run, fuse
+from configs.config import TOP_K_BASELINE
+from configs.config import TOP_K_RERANKED
+from configs.config import RRF_K
+from configs.config import FAISS_NPROBE
 
 # Load .env file
 load_dotenv()
@@ -75,10 +80,6 @@ EMBEDDING_MODEL = "google/embeddinggemma-300m"
 EMBEDDING_DIM = 768
 
 # Retrieval parameters (agents.md szerint)
-TOP_K_BASELINE = 300  # Retrieve top-300 from each source
-TOP_K_OUTPUT = 20     # Final top-K after fusion
-RRF_K = 60            # RRF parameter (agents.md)
-FAISS_NPROBE = 64     # CRITICAL: recall optimization (agents.md)
 
 print("📂 Workspace és fájlok:")
 print(f"  Base path: {BASE_PATH}")
@@ -90,9 +91,7 @@ print(f"  Output: {OUTPUT_PATH}")
 print()
 print("⚙️ Retrieval konfiguráció:")
 print(f"  Top-K baseline: {TOP_K_BASELINE}")
-print(f"  Top-K output: {TOP_K_OUTPUT}")
-print(f"  RRF_K: {RRF_K}")
-print(f"  FAISS nprobe: {FAISS_NPROBE}")
+print(f"  Top-K reranked: {TOP_K_RERANKED}")
 
 # Fájl ellenőrzés
 required_files = [
@@ -235,24 +234,6 @@ elif isinstance(raw_map, dict):
 else:
     raise TypeError(f"Ismeretlen chunk_id_map típus: {type(raw_map)}")
 
-def idx_to_chunk_id(i: int):
-    if isinstance(raw_map, np.ndarray):
-        if 0 <= i < len(raw_map):
-            return str(raw_map[i])
-        return None
-    if isinstance(raw_map, dict):
-        # Kulcs lehet int, np.int64 vagy str; próbáljuk sorban
-        v = raw_map.get(i)
-        if v is None:
-            try:
-                v = raw_map.get(int(i))
-            except Exception:
-                pass
-        if v is None:
-            v = raw_map.get(str(i))
-        return v
-    return None
-
 # === Query Lista Betöltése ===
 print("\n" + "="*60)
 print("📋 QUERY LISTA BETÖLTÉSE")
@@ -295,29 +276,157 @@ def aggregate_chunks_to_docs(chunk_scores: List[Tuple[str, float]]) -> List[Tupl
 
 def rrf_fusion(bm25_results: List[Tuple[str, float]],
                dense_results: List[Tuple[str, float]],
+               query_id: str = "q",
                k: int = RRF_K) -> List[Tuple[str, float]]:
-    """Reciprocal Rank Fusion (RRF) - agents.md szerint."""
-    rrf_scores: Dict[str, float] = {}
+    """
+    Reciprocal Rank Fusion (RRF) - agents.md szerint, ranx library használatával.
+    
+    ranx: TREC-validated RRF implementáció, több fusion stratégia támogatással.
+    """
+    # ranx Run formátum: {query_id: {doc_id: score}}
+    bm25_run = Run({query_id: {doc_id: score for doc_id, score in bm25_results}})
+    dense_run = Run({query_id: {doc_id: score for doc_id, score in dense_results}})
+    
+    # RRF fusion (ranx optimalizált implementációval)
+    fused_run = fuse([bm25_run, dense_run], method="rrf", k=k)
+    
+    # Visszaalakítás lista formátumba, csökkenő sorrend szerint
+    fused_scores = [(doc_id, score) for doc_id, score in fused_run.run[query_id].items()]
+    return sorted(fused_scores, key=lambda x: x[1], reverse=True)
 
-    bm25_ranks = {doc_id: rank for rank, (doc_id, _) in enumerate(bm25_results, start=1)}
-    dense_ranks = {doc_id: rank for rank, (doc_id, _) in enumerate(dense_results, start=1)}
-    all_docs = set(bm25_ranks.keys()) | set(dense_ranks.keys())
 
-    for doc_id in all_docs:
-        score = 0.0
-        if doc_id in bm25_ranks:
-            score += 1.0 / (k + bm25_ranks[doc_id])
-        if doc_id in dense_ranks:
-            score += 1.0 / (k + dense_ranks[doc_id])
-        rrf_scores[doc_id] = score
+class HybridRetriever:
+    """HybridRetriever class for BM25 + FAISS + RRF fusion retrieval."""
 
-    return sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
+    def __init__(self, base_path=None):
+        """Initialize HybridRetriever with paths and models."""
+        self.base_path = Path(base_path or os.getenv("WORKSPACE_PATH", "/Users/zelenyianszkimate/Documents/CourtRankRL"))
+
+        # Input fájlok
+        self.chunks_path = self.base_path / "data" / "processed" / "chunks.jsonl"
+        self.bm25_index_dir = self.base_path / "data" / "index" / "bm25" / "bm25s_model"
+        self.bm25_chunk_ids_path = self.base_path / "data" / "index" / "bm25" / "chunk_ids.json"
+        self.bm25_stats_path = self.base_path / "data" / "index" / "bm25" / "bm25_stats.json"
+        self.faiss_index_path = self.base_path / "data" / "index" / "faiss_index.bin"
+        self.chunk_id_map_path = self.base_path / "data" / "index" / "chunk_id_map.npy"
+
+        # Model
+        self.embedding_model = None
+        self.bm25_model = None
+        self.faiss_index = None
+        self.chunk_id_map = None
+
+        # Parameters (agents.md szerint)
+        self.top_k_baseline = 300
+        self.top_k_output = 20
+        self.rrf_k = 60
+        self.faiss_nprobe = 64
+
+    def initialize(self):
+        """Load all models and indexes."""
+        # Load BM25
+        self.bm25_model = bm25s.BM25.load(str(self.bm25_index_dir), load_corpus=True)
+
+        # Load FAISS
+        self.faiss_index = faiss.read_index(str(self.faiss_index_path), faiss.IO_FLAG_MMAP)
+        if hasattr(self.faiss_index, 'nprobe'):
+            self.faiss_index.nprobe = self.faiss_nprobe
+        set_ivf_nprobe(self.faiss_index, self.faiss_nprobe)
+
+        # Load chunk ID mapping
+        raw_map = np.load(self.chunk_id_map_path, allow_pickle=True)
+        if isinstance(raw_map, np.ndarray) and raw_map.dtype == object and raw_map.shape == ():
+            raw_map = raw_map.item()
+        self.chunk_id_map = raw_map
+
+        # Load embedding model
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        model_kwargs = {} if device == "cpu" else {"torch_dtype": torch.bfloat16}
+
+        self.embedding_model = SentenceTransformer(
+            "google/embeddinggemma-300m",
+            device=device,
+            cache_folder=str(self.base_path / ".hf_cache"),
+            model_kwargs=model_kwargs,
+        )
+
+    def retrieve(self, query: str) -> List[str]:
+        """Perform hybrid retrieval for a single query."""
+        if (self.bm25_model is None or
+            self.faiss_index is None or
+            self.embedding_model is None):
+            raise RuntimeError("Models not initialized. Call initialize() first.")
+
+        # Query preprocessing
+        query_processed = query.lower().strip()
+
+        # BM25 retrieval
+        query_tokens = bm25s.tokenize([query_processed])
+        bm25_results_raw, bm25_scores = self.bm25_model.retrieve(query_tokens, k=self.top_k_baseline)
+
+        bm25_chunk_scores = []
+        for result_dict, score in zip(bm25_results_raw[0], bm25_scores[0]):
+            chunk_id = result_dict.get('text', '')
+            if chunk_id:
+                bm25_chunk_scores.append((chunk_id, float(score)))
+
+        bm25_doc_scores = aggregate_chunks_to_docs(bm25_chunk_scores)
+
+        # FAISS retrieval
+        query_emb = self.embedding_model.encode(
+            query_processed,
+            prompt_name="query",
+            convert_to_numpy=True,
+            normalize_embeddings=True,
+        )
+
+        distances, indices = self.faiss_index.search(
+            np.expand_dims(query_emb, axis=0),
+            self.top_k_baseline
+        )
+
+        dense_chunk_scores = []
+        for dist, idx in zip(distances[0], indices[0]):
+            if idx == -1:
+                continue
+            chunk_id = idx_to_chunk_id(self.chunk_id_map, int(idx))
+            if chunk_id:
+                dense_chunk_scores.append((chunk_id, float(dist)))
+
+        dense_doc_scores = aggregate_chunks_to_docs(dense_chunk_scores)
+
+        # RRF fusion (ranx-szal)
+        fused_scores = rrf_fusion(bm25_doc_scores, dense_doc_scores, query_id=query, k=self.rrf_k)
+        top_docs = [doc_id for doc_id, _ in fused_scores[:self.top_k_output]]
+
+        return top_docs
 
 
-print("✅ Helper függvények definiálva")
+@staticmethod
+def idx_to_chunk_id(chunk_map, i: int):
+    """Helper function for chunk ID mapping."""
+    if isinstance(chunk_map, np.ndarray):
+        if 0 <= i < len(chunk_map):
+            return str(chunk_map[i])
+        return None
+    if isinstance(chunk_map, dict):
+        v = chunk_map.get(i)
+        if v is None:
+            try:
+                v = chunk_map.get(int(i))
+            except Exception:
+                pass
+        if v is None:
+            v = chunk_map.get(str(i))
+        return v
+    return None
+
+
+print("✅ Helper függvények definiálva (ranx library integrációval)")
 print("   - strip_chunk_suffix: chunk_id → doc_id")
 print("   - aggregate_chunks_to_docs: chunk-level → doc-level (max-score)")
-print("   - rrf_fusion: BM25 + FAISS → RRF fusion")
+print("   - rrf_fusion: BM25 + FAISS → RRF fusion (ranx.fuse - TREC-validated)")
+print("   - HybridRetriever: osztály a hybrid retrieval-hez")
 
 # === Hybrid Retrieval Pipeline ===
 print("\n" + "="*60)
@@ -325,7 +434,7 @@ print("🔍 HYBRID RETRIEVAL PIPELINE FUTTATÁSA")
 print("="*60)
 print(f"  Query-k száma: {len(queries)}")
 print(f"  Top-K baseline: {TOP_K_BASELINE}")
-print(f"  Top-K output: {TOP_K_OUTPUT}")
+print(f"  Top-K reranked: {TOP_K_RERANKED}")
 print(f"  Fusion: RRF (k={RRF_K})")
 print()
 
@@ -373,7 +482,7 @@ for i, query in enumerate(queries, 1):
         for dist, idx in zip(distances[0], indices[0]):
             if idx == -1:
                 continue
-            chunk_id = idx_to_chunk_id(int(idx))
+            chunk_id = idx_to_chunk_id(raw_map, int(idx))
             if chunk_id:
                 dense_chunk_scores.append((chunk_id, float(dist)))
 
@@ -381,8 +490,8 @@ for i, query in enumerate(queries, 1):
         dense_doc_scores = aggregate_chunks_to_docs(dense_chunk_scores)
 
         # === RRF Fusion ===
-        fused_scores = rrf_fusion(bm25_doc_scores, dense_doc_scores, k=RRF_K)
-        top_docs = [doc_id for doc_id, _ in fused_scores[:TOP_K_OUTPUT]]
+        fused_scores = rrf_fusion(bm25_doc_scores, dense_doc_scores, query_id=query, k=RRF_K)
+        top_docs = [doc_id for doc_id, _ in fused_scores[:TOP_K_RERANKED]]
 
         # Save result
         results.append({
@@ -414,7 +523,7 @@ with open(OUTPUT_PATH, 'w', encoding='utf-8') as f:
         f.write(json.dumps(result, ensure_ascii=False) + '\n')
 
 print(f"✅ Eredmények mentve: {OUTPUT_PATH}")
-print(f"   {len(results)} query × top-{TOP_K_OUTPUT} dokumentum")
+print(f"   {len(results)} query × top-{TOP_K_RERANKED} dokumentum")
 
 # Statisztikák
 total_docs_found = sum(r['num_results'] for r in results)
