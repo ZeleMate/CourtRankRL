@@ -83,7 +83,7 @@ BASELINE_RESULTS_DIR = DATA_DIR / "baseline_results"
 RERANKED_RESULTS_DIR = DATA_DIR / "reranked_results"
 
 # --- Retrieval Configuration ---
-TOP_K_BASELINE = 100
+TOP_K_BASELINE = 300
 TOP_K_RERANKED = 20
 RRF_K = 60
 

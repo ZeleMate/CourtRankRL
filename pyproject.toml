@@ -10,32 +10,27 @@ dependencies = [
     "pandas",
     "tqdm",
     "torch",
-    
     # Retrieval & indexing
     "faiss-cpu",
     "bm25s",
     "scikit-learn",
-    
     # Hugging Face ecosystem
     "transformers",
     "accelerate",
     "huggingface_hub",
     "sentence-transformers",
-    
     # Document processing
     "docling",
     "docling-core",
-    
     # RL training (cloud-only, de lokálisan is kell az import-okhoz)
     "trl",
     "peft",
-    
     # Utilities
     "python-dotenv",
-    
     # Data visualization (data_analysis.ipynb)
     "matplotlib",
     "seaborn",
+    "ranx>=0.3.21",
 ]
 
 [build-system]
