@@ -434,7 +434,13 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(
-        description="Qrels validáló - ellenőrzi a baseline_qrels.tsv formátumát és konzisztenciáját"
+        description="Qrels validáló - ellenőrzi a qrels fájl formátumát és konzisztenciáját"
+    )
+    parser.add_argument(
+        "--qrels-file",
+        type=str,
+        default=None,
+        help="Qrels fájl path (alapértelmezett: baseline_qrels.tsv)",
     )
     parser.add_argument(
         "--check-retrieval",
@@ -443,7 +449,15 @@ def main():
     )
     args = parser.parse_args()
     
-    validator = QrelsValidator(qrels_path, chunks_path)
+    # Use custom qrels file if provided
+    if args.qrels_file:
+        custom_qrels_path = project_root / args.qrels_file
+        if not custom_qrels_path.exists():
+            custom_qrels_path = Path(args.qrels_file)
+        validator = QrelsValidator(custom_qrels_path, chunks_path)
+    else:
+        validator = QrelsValidator(qrels_path, chunks_path)
+    
     success = validator.validate_all(check_retrieval=args.check_retrieval)
     
     if args.check_retrieval:

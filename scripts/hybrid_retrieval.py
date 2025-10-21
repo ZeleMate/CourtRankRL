@@ -25,7 +25,7 @@ Output:
 import os
 import json
 from pathlib import Path
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Optional
 
 import numpy as np
 import torch
@@ -288,7 +288,7 @@ def rrf_fusion(bm25_results: List[Tuple[str, float]],
     dense_run = Run({query_id: {doc_id: score for doc_id, score in dense_results}})
     
     # RRF fusion (ranx optimalizált implementációval)
-    fused_run = fuse([bm25_run, dense_run], method="rrf", k=k)
+    fused_run = fuse([bm25_run, dense_run], method="rrf")
     
     # Visszaalakítás lista formátumba, csökkenő sorrend szerint
     fused_scores = [(doc_id, score) for doc_id, score in fused_run.run[query_id].items()]
@@ -315,6 +315,14 @@ class HybridRetriever:
         self.bm25_model = None
         self.faiss_index = None
         self.chunk_id_map = None
+
+        # Chunk-level score cache (GRPO slate preparation-höz)
+        self.last_bm25_chunk_scores = []
+        self.last_faiss_chunk_scores = []
+        self.last_fused_chunk_order = []
+
+        # Metadata cache (lazy loading, memory-efficient)
+        self._chunks_metadata_cache = None  # Dict[chunk_id, metadata]
 
         # Parameters (agents.md szerint)
         self.top_k_baseline = 300
@@ -370,6 +378,9 @@ class HybridRetriever:
             if chunk_id:
                 bm25_chunk_scores.append((chunk_id, float(score)))
 
+        # Store BM25 chunk scores for GRPO slate preparation
+        self.last_bm25_chunk_scores = bm25_chunk_scores.copy()
+
         bm25_doc_scores = aggregate_chunks_to_docs(bm25_chunk_scores)
 
         # FAISS retrieval
@@ -393,13 +404,145 @@ class HybridRetriever:
             if chunk_id:
                 dense_chunk_scores.append((chunk_id, float(dist)))
 
+        # Store FAISS chunk scores for GRPO slate preparation
+        self.last_faiss_chunk_scores = dense_chunk_scores.copy()
+
         dense_doc_scores = aggregate_chunks_to_docs(dense_chunk_scores)
 
-        # RRF fusion (ranx-szal)
+        # Chunk-level RRF fusion (for GRPO slate preparation)
+        chunk_rrf_scores = self._compute_chunk_level_rrf(bm25_chunk_scores, dense_chunk_scores)
+        self.last_fused_chunk_order = chunk_rrf_scores.copy()  # Baseline order for GRPO
+
+        # Document-level RRF fusion (for final results)
         fused_scores = rrf_fusion(bm25_doc_scores, dense_doc_scores, query_id=query, k=self.rrf_k)
         top_docs = [doc_id for doc_id, _ in fused_scores[:self.top_k_output]]
 
         return top_docs
+
+    def _compute_chunk_level_rrf(self, bm25_chunks, faiss_chunks) -> List[Tuple[str, float]]:
+        """
+        RRF fusion chunk-szinten (konzisztencia a doc-level RRF-fel).
+        Használja a ranx library-t.
+        """
+        if not bm25_chunks and not faiss_chunks:
+            return []
+        
+        # ranx Run formátum: {query_id: {chunk_id: score}}
+        query_id = "chunk_rrf"
+        
+        bm25_run = Run({query_id: {chunk_id: score for chunk_id, score in bm25_chunks}})
+        faiss_run = Run({query_id: {chunk_id: score for chunk_id, score in faiss_chunks}})
+        
+        # RRF fusion (ranx optimalizált implementációval)
+        fused_run = fuse([bm25_run, faiss_run], method="rrf")
+        
+        # Visszaalakítás lista formátumba, csökkenő sorrend szerint
+        fused_scores = [(chunk_id, score) for chunk_id, score in fused_run.run[query_id].items()]
+        return sorted(fused_scores, key=lambda x: x[1], reverse=True)
+
+    def get_last_chunk_scores(self, source: str, top_k: Optional[int] = None) -> List[Tuple[str, float]]:
+        """
+        Visszaadja az utolsó retrieval chunk-szintű score-jait.
+        
+        Args:
+            source: "bm25", "dense", vagy "fused"
+            top_k: Opcionális limit
+            
+        Returns:
+            [(chunk_id, score), ...] csökkenő sorrendben
+        """
+        if source == "bm25":
+            scores = self.last_bm25_chunk_scores
+        elif source == "dense":
+            scores = self.last_faiss_chunk_scores
+        elif source == "fused":
+            scores = self.last_fused_chunk_order
+        else:
+            raise ValueError(f"Unknown source: {source}. Use 'bm25', 'dense', or 'fused'")
+        
+        if top_k is not None and top_k > 0:
+            return scores[:top_k]
+        return scores
+
+    def _load_chunk_texts(self, chunk_ids: List[str]) -> Dict[str, str]:
+        """
+        Betölti a teljes chunk szövegeket chunks.jsonl-ből.
+        Pandas chunked reading (memory-efficient).
+        
+        Returns:
+            {chunk_id: full_text}
+        """
+        import pandas as pd
+        
+        chunk_texts = {}
+        chunk_ids_set = set(chunk_ids)
+        
+        # Pandas chunked reading (memory-efficient)
+        chunk_size = 10000  # Process 10k chunks at a time
+        
+        for chunk_df in pd.read_json(self.chunks_path, lines=True, chunksize=chunk_size):
+            for _, row in chunk_df.iterrows():
+                chunk_id = row.get('chunk_id')
+                if chunk_id in chunk_ids_set:
+                    chunk_texts[chunk_id] = row.get('text', '')
+                    if len(chunk_texts) == len(chunk_ids_set):
+                        break
+            if len(chunk_texts) == len(chunk_ids_set):
+                break
+        
+        return chunk_texts
+
+    def get_doc_metadata(self, doc_id: str) -> Dict[str, str]:
+        """
+        Visszaadja a dokumentum metaadatait (court, domain, year).
+        Lazy loading + cache (memory-efficient).
+        """
+        self._ensure_metadata_cache()
+        
+        # Find any chunk from this doc_id to get metadata
+        if self._chunks_metadata_cache is not None:
+            for chunk_id, metadata in self._chunks_metadata_cache.items():
+                if self._chunk_id_to_doc_id(chunk_id) == doc_id:
+                    return metadata
+        
+        # Fallback if not found
+        return {"court": "", "domain": "", "year": ""}
+
+    def _chunk_id_to_doc_id(self, chunk_id: str) -> str:
+        """Chunk ID → Doc ID konverzió (suffix stripping)."""
+        return strip_chunk_suffix(chunk_id)
+
+    def _ensure_metadata_cache(self):
+        """
+        Lazy loading: első híváskor betölti chunks.jsonl-t pandas-szal,
+        kinyeri metadata-t chunk_id kulccsal.
+        """
+        if self._chunks_metadata_cache is not None:
+            return
+        
+        import pandas as pd
+        
+        print("📦 Metadata cache betöltése (lazy loading)...")
+        self._chunks_metadata_cache = {}
+        
+        # Pandas chunked reading (memory-efficient)
+        chunk_size = 10000
+        processed = 0
+        
+        for chunk_df in pd.read_json(self.chunks_path, lines=True, chunksize=chunk_size):
+            for _, row in chunk_df.iterrows():
+                chunk_id = row.get('chunk_id')
+                if chunk_id:
+                    self._chunks_metadata_cache[chunk_id] = {
+                        "court": row.get('court', ''),
+                        "domain": row.get('domain', ''),
+                        "year": row.get('year', '')
+                    }
+                processed += 1
+                if processed % 50000 == 0:
+                    print(f"   Feldolgozva: {processed:,} chunk...", end="\r")
+        
+        print(f"\r   ✅ Metadata cache kész: {len(self._chunks_metadata_cache):,} chunk")
 
 
 @staticmethod
