@@ -78,8 +78,8 @@ def extract_metadata_from_path(filepath: Path) -> Dict[str, str]:
             case_id = stem
 
     return {
-        'court': court,
-        'domain': domain,
+        'court': court.strip(),
+        'domain': domain.strip(),
         'year': '',  # Év üresen marad, később az ügyszámból nyerjük ki
         'doc_id': case_id,
     }
@@ -323,9 +323,9 @@ def process_single_file_worker(filepath_str: str, raw_root_str: str, tmp_dir_str
         path_meta = extract_metadata_from_path(filepath)
         doc_id = path_meta.get('doc_id') or filepath.stem
         doc_metadata = {
-            'court': path_meta.get('court', ''),
-            'domain': path_meta.get('domain', ''),
-            'year': path_meta.get('year', ''),
+            'court': (path_meta.get('court') or '').strip(),
+            'domain': (path_meta.get('domain') or '').strip(),
+            'year': (path_meta.get('year') or '').strip(),
             'source_path': str(filepath),
         }
 
@@ -371,8 +371,14 @@ def process_single_file_worker(filepath_str: str, raw_root_str: str, tmp_dir_str
                 # Ügyszámból és dátumból kinyert year és domain felülírja a path-ból nyertet
                 if docling_meta.get('year'):
                     doc_metadata['year'] = docling_meta['year']
-                if docling_meta.get('domain'):
-                    doc_metadata['domain'] = docling_meta['domain']
+                docling_domain = (docling_meta.get('domain') or '').strip()
+                if (
+                    docling_domain
+                    and len(docling_domain) >= 3
+                    and not docling_domain.isupper()
+                    and not doc_metadata.get('domain')
+                ):
+                    doc_metadata['domain'] = docling_domain
 
         tmp_dir.mkdir(parents=True, exist_ok=True)
         tmp_path = tmp_dir / f"tmp_{filepath.stem}_{mp.current_process().pid}.jsonl"

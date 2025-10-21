@@ -27,6 +27,7 @@ dependencies = [
     "peft",
     # Utilities
     "python-dotenv",
+    "openai>=1.0.0",
     # Data visualization (data_analysis.ipynb)
     "matplotlib",
     "seaborn",
