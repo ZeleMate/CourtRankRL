@@ -321,8 +321,8 @@ class HybridRetriever:
         self.last_faiss_chunk_scores = []
         self.last_fused_chunk_order = []
 
-        # Metadata cache (lazy loading, memory-efficient)
-        self._chunks_metadata_cache = None  # Dict[chunk_id, metadata]
+        # Unified cache (text + metadata): ~1.5-1.8 GB RAM
+        self._chunk_cache = None  # Dict[chunk_id, {text, court, domain, year}]
 
         # Parameters (agents.md szerint)
         self.top_k_baseline = 300
@@ -357,6 +357,16 @@ class HybridRetriever:
             cache_folder=str(self.base_path / ".hf_cache"),
             model_kwargs=model_kwargs,
         )
+
+    def set_chunk_cache(self, cache: Dict[str, Dict[str, str]]):
+        """
+        Beállítja a chunk cache-t külső forrásból (pl. prepare_grpo_slates.py).
+        
+        Args:
+            cache: {chunk_id: {"text": str, "court": str, "domain": str, "year": str}}
+        """
+        self._chunk_cache = cache
+        print(f"   ✅ Chunk cache beállítva: {len(cache):,} elem")
 
     def retrieve(self, query: str) -> List[str]:
         """Perform hybrid retrieval for a single query."""
@@ -466,18 +476,27 @@ class HybridRetriever:
 
     def _load_chunk_texts(self, chunk_ids: List[str]) -> Dict[str, str]:
         """
-        Betölti a teljes chunk szövegeket chunks.jsonl-ből.
-        Pandas chunked reading (memory-efficient).
+        Betölti a teljes chunk szövegeket cache-ből (ha van), különben pandas chunked reading.
         
         Returns:
             {chunk_id: full_text}
         """
+        # Gyors cache lookup, ha elérhető
+        if self._chunk_cache is not None:
+            chunk_texts = {}
+            for chunk_id in chunk_ids:
+                if chunk_id in self._chunk_cache:
+                    chunk_texts[chunk_id] = self._chunk_cache[chunk_id]["text"]
+                else:
+                    chunk_texts[chunk_id] = ""  # Fallback üres stringre
+            return chunk_texts
+        
+        # Fallback: pandas chunked reading (lassabb, de működik cache nélkül is)
         import pandas as pd
         
         chunk_texts = {}
         chunk_ids_set = set(chunk_ids)
         
-        # Pandas chunked reading (memory-efficient)
         chunk_size = 10000  # Process 10k chunks at a time
         
         for chunk_df in pd.read_json(self.chunks_path, lines=True, chunksize=chunk_size):
@@ -494,55 +513,41 @@ class HybridRetriever:
 
     def get_doc_metadata(self, doc_id: str) -> Dict[str, str]:
         """
-        Visszaadja a dokumentum metaadatait (court, domain, year).
-        Lazy loading + cache (memory-efficient).
+        Visszaadja a dokumentum metaadatait (court, domain, year) cache-ből (ha van), különben pandas chunked reading.
         """
-        self._ensure_metadata_cache()
-        
-        # Find any chunk from this doc_id to get metadata
-        if self._chunks_metadata_cache is not None:
-            for chunk_id, metadata in self._chunks_metadata_cache.items():
+        # Gyors cache lookup, ha elérhető
+        if self._chunk_cache is not None:
+            for chunk_id, data in self._chunk_cache.items():
                 if self._chunk_id_to_doc_id(chunk_id) == doc_id:
-                    return metadata
+                    return {
+                        "court": data["court"],
+                        "domain": data["domain"],
+                        "year": data["year"]
+                    }
+            # Fallback if not found in cache
+            return {"court": "", "domain": "", "year": ""}
         
-        # Fallback if not found
+        # Fallback: pandas chunked reading (lassabb, de működik cache nélkül is)
+        import pandas as pd
+        
+        chunk_size = 10000
+        
+        for chunk_df in pd.read_json(self.chunks_path, lines=True, chunksize=chunk_size):
+            for _, row in chunk_df.iterrows():
+                chunk_id = row.get('chunk_id')
+                if chunk_id and self._chunk_id_to_doc_id(chunk_id) == doc_id:
+                    return {
+                        "court": str(row.get('court', '')),
+                        "domain": str(row.get('domain', '')),
+                        "year": str(row.get('year', ''))
+                    }
+        
+        # Fallback if not found at all
         return {"court": "", "domain": "", "year": ""}
 
     def _chunk_id_to_doc_id(self, chunk_id: str) -> str:
         """Chunk ID → Doc ID konverzió (suffix stripping)."""
         return strip_chunk_suffix(chunk_id)
-
-    def _ensure_metadata_cache(self):
-        """
-        Lazy loading: első híváskor betölti chunks.jsonl-t pandas-szal,
-        kinyeri metadata-t chunk_id kulccsal.
-        """
-        if self._chunks_metadata_cache is not None:
-            return
-        
-        import pandas as pd
-        
-        print("📦 Metadata cache betöltése (lazy loading)...")
-        self._chunks_metadata_cache = {}
-        
-        # Pandas chunked reading (memory-efficient)
-        chunk_size = 10000
-        processed = 0
-        
-        for chunk_df in pd.read_json(self.chunks_path, lines=True, chunksize=chunk_size):
-            for _, row in chunk_df.iterrows():
-                chunk_id = row.get('chunk_id')
-                if chunk_id:
-                    self._chunks_metadata_cache[chunk_id] = {
-                        "court": row.get('court', ''),
-                        "domain": row.get('domain', ''),
-                        "year": row.get('year', '')
-                    }
-                processed += 1
-                if processed % 50000 == 0:
-                    print(f"   Feldolgozva: {processed:,} chunk...", end="\r")
-        
-        print(f"\r   ✅ Metadata cache kész: {len(self._chunks_metadata_cache):,} chunk")
 
 
 @staticmethod
