@@ -61,6 +61,33 @@ GRPO_SLATE_SIZE = 20  # 20 chunks/query (agents.md spec)
 GRPO_LORA_RANK = 64  # LoRA rank (agents.md spec)
 GRPO_LORA_ALPHA = 128  # 2 × rank
 
+# Multi-Metric GRPO Reward Configuration (UPDATED: sigmoid-based, improved)
+GRPO_REWARD_WEIGHTS = {
+    "ndcg10": 0.60,    # Rangsor minőség (növelt súly: 50% → 60%)
+    "mrr5": 0.30,      # Első releváns találat (csökkentett: 35% → 30%)
+    "recall20": 0.10,  # Completeness (csökkentett: 15% → 10%)
+}
+GRPO_REWARD_CLIP_MIN = -1.0
+GRPO_REWARD_CLIP_MAX = 1.0
+GRPO_REWARD_USE_SIGMOID = True  # Sigmoid(delta) transzformáció → stabil gradiens
+GRPO_REWARD_MRR_TIEBREAK_BONUS = 0.02  # Bonus ha csak MRR javul (UX érték)
+GRPO_REWARD_DIVERSITY_PENALTY = 0.05  # Diverzitás büntetés súlya (court/domain)
+
+# Slate Configuration (UPDATED: fixált candidate pool)
+GRPO_SLATE_SIZE_CHUNKS = 300  # Top-300 chunk candidate pool (BM25 + FAISS fusion)
+GRPO_SLATE_SIZE_TRAINING = 30  # Training prompt: 30 chunk/query
+GRPO_SLATE_MIN_RELEVANT = 2  # Minimum 2 releváns doc/query (minőség garancia)
+
+# Curriculum Learning Configuration (UPDATED: stratified + hard injection)
+GRPO_CURRICULUM_ENABLED = True
+GRPO_CURRICULUM_INITIAL_EASY_RATIO = 0.40  # 40% easy (top baseline nDCG)
+GRPO_CURRICULUM_INITIAL_MEDIUM_RATIO = 0.40  # 40% medium
+GRPO_CURRICULUM_HARD_INJECTION_STEP = 150  # Hard példák injektálása 150 lépésenként
+GRPO_CURRICULUM_HARD_INJECTION_RATIO = 0.20  # 20% hard injection
+
+# Baseline metrics path (pre-computed from baseline_evaluation.ipynb)
+BASELINE_QUERY_METRICS_PATH = GRPO_POLICY_DIR / "baseline_query_metrics.csv"
+
 # Unsloth + vLLM optimizations:
 # - Batch 4 (vs 2): 50% memory savings from Unsloth gradient checkpointing
 # - Generations 10 (vs 6): vLLM 2-3x faster inference
@@ -72,7 +99,7 @@ GRPO_MAX_STEPS = 500  # ~5 epochs for 98 queries
 GRPO_NUM_GENERATIONS = 10  # Unsloth + vLLM optimized (6 → 10)
 GRPO_LEARNING_RATE = 1e-5
 GRPO_WARMUP_STEPS = 50
-GRPO_MAX_SEQ_LENGTH = 8192  # Context window for chunk-based slates (20×640char + metadata ≈ 5-6k tokens)
+GRPO_MAX_SEQ_LENGTH = 12288  # Context window for chunk-based slates (updated: 8192→12288 for 9600+ token prompts)
 GRPO_GPU_MEMORY_UTIL = 0.8  # vLLM memory utilization
 
 # Cloud Training Notebook
