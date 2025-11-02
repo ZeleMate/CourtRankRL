@@ -34,6 +34,12 @@ from scripts.hybrid_retrieval import HybridRetriever
 MIN_HIGH_REL_CHUNKS = 2  # Minimum high-relevance chunks per slate
 HIGH_REL_SCORE_BONUS = 0.15  # Score bonus for relevance==2 chunks
 
+# Slate quality improvement konfiguráció (UPDATED: config.py alapján)
+MIN_RELEVANT_DOCS_IN_SLATE = 2  # Minimum releváns dokumentumok száma slate-enként (rel>=1)
+SLATE_SIZE_CHUNKS = 300  # TOP-300 CHUNK CANDIDATE POOL (fixált, BM25+FAISS fusion)
+SLATE_SIZE_TRAINING = 30  # Training prompt: 30 chunk (reprezentatív minta)
+MIN_RELEVANT_DOCS_TO_KEEP_QUERY = 2  # Minimum 2 releváns doc query-nként (minőség garancia)
+
 
 def build_chunk_cache(chunks_path: Path) -> Dict[str, Dict[str, str]]:
     """
@@ -145,7 +151,7 @@ def prepare_chunk_slates(
     retriever: HybridRetriever,
     high_rel_docs: Dict[str, List[str]],
     doc_chunks_map: Dict[str, List[str]],
-    top_k: int = 20,
+    top_k: int = SLATE_SIZE_TRAINING,
 ) -> List[Dict[str, Any]]:
     """
     Chunk-level slate készítés meglévő qrels-ből.
@@ -272,12 +278,58 @@ def prepare_chunk_slates(
                 "text": text,  # FULL TEXT
             })
         
+        # ====== QUERY FILTERING: csak olyan query-ket tartunk meg, ahol van releváns dokumentum ======
+        relevant_count = sum(1 for doc in slate_candidates if doc.get('relevance', 0) >= 1)
+        if relevant_count < MIN_RELEVANT_DOCS_TO_KEEP_QUERY:
+            # Skip query - nincs elég releváns dokumentum
+            continue
+        
+        # ====== RELEVÁNS DOKUMENTUMOK EXPLICIT HHOZÁADÁSA ======
+        # Ha kevesebb mint MIN_RELEVANT_DOCS_IN_SLATE releváns dokumentum van, kiegészítjük
+        if relevant_count < MIN_RELEVANT_DOCS_IN_SLATE:
+            # Keresünk hiányzó releváns dokumentumokat a qrels-ből
+            slate_doc_ids = {doc.get('doc_id') for doc in slate_candidates}
+            missing_relevant_docs = [
+                doc_id for doc_id, rel in doc_relevances.items() 
+                if rel >= 1 and doc_id not in slate_doc_ids
+            ]
+            
+            # Hozzáadjuk a hiányzó releváns dokumentumokat (első chunk-ot választva)
+            for doc_id in missing_relevant_docs[:MIN_RELEVANT_DOCS_IN_SLATE - relevant_count]:
+                chunks_for_doc = doc_chunks_map.get(doc_id, [])
+                if chunks_for_doc:
+                    added_chunk_id = chunks_for_doc[0]
+                    # Újra lekérjük a szükséges adatokat
+                    metadata = retriever.get_doc_metadata(doc_id)
+                    text = retriever._load_chunk_texts([added_chunk_id]).get(added_chunk_id, "")
+                    
+                    slate_candidates.append({
+                        "chunk_id": added_chunk_id,
+                        "doc_id": doc_id,
+                        "bm25_score": bm25_scores.get(added_chunk_id, 0.0),
+                        "faiss_score": faiss_scores.get(added_chunk_id, 0.0),
+                        "rrf_score": 0.0,  # Új hozzáadott, nincs retrieval score
+                        "relevance": doc_relevances.get(doc_id, 0),
+                        "court": metadata.get("court", ""),
+                        "domain": metadata.get("domain", ""),
+                        "year": metadata.get("year", ""),
+                        "text": text,
+                    })
+        
+        # KRITIKUS: NE rendezzük át a slate-et relevancia szerint!
+        # A baseline sorrendnek tisztán az RRF fusion eredményét kell tükröznie.
+        # Az újonnan hozzáadott dokumentumok (rrf_score=0.0) automatikusan a sor végére kerülnek.
+        # Top-k limitálás
+        slate_candidates = slate_candidates[:top_k]
+        
         slates.append({
             "query_id": query_id,
-            "slate": slate_candidates,  # Order = baseline RRF ranking
+            "slate": slate_candidates,  # Order = tiszta baseline RRF ranking (nincs relevancia leakage!)
         })
     
-    print(f"   ✅ Feldolgozva: {len(qrels)} query")
+    print(f"   ✅ Feldolgozva: {len(slates)}/{len(qrels)} query (filtered: {len(qrels) - len(slates)} query)")
+    print(f"   📊 Slate méret: {SLATE_SIZE_TRAINING} chunk/query (training), {SLATE_SIZE_CHUNKS} candidate pool")
+    print(f"   📊 Minimum releváns dokumentum: {MIN_RELEVANT_DOCS_IN_SLATE} rel>=1 / slate")
     
     return slates
 
@@ -357,8 +409,8 @@ def main():
     parser.add_argument(
         "--top-k",
         type=int,
-        default=20,
-        help="Hány candidate chunk kerüljön a slate-be",
+        default=SLATE_SIZE_TRAINING,
+        help="Hány chunk kerüljön a training slate-be (default: 30)",
     )
     
     args = parser.parse_args()
