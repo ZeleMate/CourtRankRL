@@ -30,15 +30,9 @@ sys.path.insert(0, str(project_root))
 from configs import config
 from scripts.hybrid_retrieval import HybridRetriever
 
-# Relevancia-2 augmentation konfiguráció
-MIN_HIGH_REL_CHUNKS = 2  # Minimum high-relevance chunks per slate
-HIGH_REL_SCORE_BONUS = 0.15  # Score bonus for relevance==2 chunks
-
-# Slate quality improvement konfiguráció (UPDATED: config.py alapján)
-MIN_RELEVANT_DOCS_IN_SLATE = 2  # Minimum releváns dokumentumok száma slate-enként (rel>=1)
+# Slate konfiguráció (UPDATED: tiszta RRF sorrend, nincs relevancia-bónusz, nincs qrels-alapú filtering)
 SLATE_SIZE_CHUNKS = 300  # TOP-300 CHUNK CANDIDATE POOL (fixált, BM25+FAISS fusion)
 SLATE_SIZE_TRAINING = 30  # Training prompt: 30 chunk (reprezentatív minta)
-MIN_RELEVANT_DOCS_TO_KEEP_QUERY = 2  # Minimum 2 releváns doc query-nként (minőség garancia)
 
 
 def build_chunk_cache(chunks_path: Path) -> Dict[str, Dict[str, str]]:
@@ -108,49 +102,9 @@ def load_qrels(qrels_path: Path) -> Dict[str, Dict[str, int]]:
     return dict(qrels)
 
 
-def build_high_rel_mapping(qrels: Dict[str, Dict[str, int]]) -> Dict[str, List[str]]:
-    """
-    Relevancia==2 dokumentumok query-nként.
-    
-    Returns:
-        {query_id: [doc_id where relevance==2]}
-    """
-    high_rel_docs = defaultdict(list)
-    for query_id, doc_relevances in qrels.items():
-        for doc_id, relevance in doc_relevances.items():
-            if relevance == 2:
-                high_rel_docs[query_id].append(doc_id)
-    return dict(high_rel_docs)
-
-
-def build_doc_chunks_mapping(chunks_path: Path) -> Dict[str, List[str]]:
-    """
-    Doc ID → chunk ID lista mapping chunks.jsonl alapján.
-    
-    Returns:
-        {doc_id: [chunk_id_0, chunk_id_1, ...]}
-    """
-    import pandas as pd
-    
-    print("\n🔗 Doc→Chunk mapping építése...")
-    doc_chunks = defaultdict(list)
-    
-    df = pd.read_json(chunks_path, lines=True)
-    for _, row in df.iterrows():
-        doc_id = row.get('doc_id')
-        chunk_id = row.get('chunk_id')
-        if doc_id and chunk_id:
-            doc_chunks[doc_id].append(chunk_id)
-    
-    print(f"   ✅ {len(doc_chunks)} doc mapped")
-    return dict(doc_chunks)
-
-
 def prepare_chunk_slates(
     qrels: Dict[str, Dict[str, int]],
     retriever: HybridRetriever,
-    high_rel_docs: Dict[str, List[str]],
-    doc_chunks_map: Dict[str, List[str]],
     top_k: int = SLATE_SIZE_TRAINING,
 ) -> List[Dict[str, Any]]:
     """
@@ -184,6 +138,7 @@ def prepare_chunk_slates(
         _ = retriever.retrieve(query_id)
         
         # Get chunk-level fused scores (RRF baseline order)
+        # KRITIKUS: Csak tiszta RRF fusion sorrendet használunk, nincs relevancia-bónusz vagy extra chunk
         fused_chunks = retriever.get_last_chunk_scores("fused", top_k=top_k)
         
         if not fused_chunks:
@@ -193,56 +148,6 @@ def prepare_chunk_slates(
                 "slate": [],  # Üres slate
             })
             continue
-        
-        # ====== ÚJ: HIGH-RELEVANCE AUGMENTÁCIÓ ======
-        # 1. Ellenőrizzük: van-e elég relevancia==2 chunk a slate-ben
-        current_high_rel_count = 0
-        existing_chunk_ids = {chunk_id for chunk_id, _ in fused_chunks}
-        existing_doc_ids = {retriever._chunk_id_to_doc_id(cid) for cid in existing_chunk_ids}
-        
-        query_high_rel_docs = high_rel_docs.get(query_id, [])
-        missing_high_rel_docs = [doc_id for doc_id in query_high_rel_docs 
-                                 if doc_id not in existing_doc_ids]
-        
-        # 2. Pótoljuk a hiányzó relevancia==2 chunk-okat
-        if len(query_high_rel_docs) > 0:  # Van releváns doc ennél a query-nél
-            for chunk_id, _ in fused_chunks:
-                doc_id = retriever._chunk_id_to_doc_id(chunk_id)
-                if doc_relevances.get(doc_id, 0) == 2:
-                    current_high_rel_count += 1
-            
-            # Ha kevesebb mint MIN_HIGH_REL_CHUNKS, pótoljuk
-            if current_high_rel_count < MIN_HIGH_REL_CHUNKS and missing_high_rel_docs:
-                needed = MIN_HIGH_REL_CHUNKS - current_high_rel_count
-                for doc_id in missing_high_rel_docs[:needed]:
-                    # Első chunk választása
-                    chunks_for_doc = doc_chunks_map.get(doc_id, [])
-                    if chunks_for_doc:
-                        # Válasszuk az első chunk-ot
-                        added_chunk_id = chunks_for_doc[0]
-                        # Adjuk hozzá 0 score-ral (később bonuszolva lesz)
-                        fused_chunks.append((added_chunk_id, 0.0))
-        
-        # 3. Score bonus alkalmazása relevancia==2 chunk-okra
-        fused_chunks_with_bonus = []
-        for chunk_id, rrf_score in fused_chunks:
-            doc_id = retriever._chunk_id_to_doc_id(chunk_id)
-            relevance = doc_relevances.get(doc_id, 0)
-            
-            # Bonus hozzáadása
-            if relevance == 2:
-                adjusted_score = rrf_score + HIGH_REL_SCORE_BONUS
-            else:
-                adjusted_score = rrf_score
-            
-            fused_chunks_with_bonus.append((chunk_id, adjusted_score))
-        
-        # 4. Újrarendezés az új score-ok alapján
-        fused_chunks_with_bonus.sort(key=lambda x: x[1], reverse=True)
-        
-        # 5. Top-K limitálás (ha pótlás miatt túlmentünk)
-        fused_chunks = fused_chunks_with_bonus[:top_k]
-        # ====== ÚJ RÉSZ VÉGE ======
         
         # Get individual scores for each chunk
         bm25_scores = {chunk_id: score for chunk_id, score in retriever.get_last_chunk_scores("bm25")}
@@ -271,65 +176,22 @@ def prepare_chunk_slates(
                 "bm25_score": bm25_scores.get(chunk_id, 0.0),
                 "faiss_score": faiss_scores.get(chunk_id, 0.0),
                 "rrf_score": rrf_score,
-                "relevance": relevance,
+                "relevance": relevance,  # Csak metadata, nem módosítja a sorrendet
                 "court": metadata.get("court", ""),
                 "domain": metadata.get("domain", ""),
                 "year": metadata.get("year", ""),
                 "text": text,  # FULL TEXT
             })
         
-        # ====== QUERY FILTERING: csak olyan query-ket tartunk meg, ahol van releváns dokumentum ======
-        relevant_count = sum(1 for doc in slate_candidates if doc.get('relevance', 0) >= 1)
-        if relevant_count < MIN_RELEVANT_DOCS_TO_KEEP_QUERY:
-            # Skip query - nincs elég releváns dokumentum
-            continue
-        
-        # ====== RELEVÁNS DOKUMENTUMOK EXPLICIT HHOZÁADÁSA ======
-        # Ha kevesebb mint MIN_RELEVANT_DOCS_IN_SLATE releváns dokumentum van, kiegészítjük
-        if relevant_count < MIN_RELEVANT_DOCS_IN_SLATE:
-            # Keresünk hiányzó releváns dokumentumokat a qrels-ből
-            slate_doc_ids = {doc.get('doc_id') for doc in slate_candidates}
-            missing_relevant_docs = [
-                doc_id for doc_id, rel in doc_relevances.items() 
-                if rel >= 1 and doc_id not in slate_doc_ids
-            ]
-            
-            # Hozzáadjuk a hiányzó releváns dokumentumokat (első chunk-ot választva)
-            for doc_id in missing_relevant_docs[:MIN_RELEVANT_DOCS_IN_SLATE - relevant_count]:
-                chunks_for_doc = doc_chunks_map.get(doc_id, [])
-                if chunks_for_doc:
-                    added_chunk_id = chunks_for_doc[0]
-                    # Újra lekérjük a szükséges adatokat
-                    metadata = retriever.get_doc_metadata(doc_id)
-                    text = retriever._load_chunk_texts([added_chunk_id]).get(added_chunk_id, "")
-                    
-                    slate_candidates.append({
-                        "chunk_id": added_chunk_id,
-                        "doc_id": doc_id,
-                        "bm25_score": bm25_scores.get(added_chunk_id, 0.0),
-                        "faiss_score": faiss_scores.get(added_chunk_id, 0.0),
-                        "rrf_score": 0.0,  # Új hozzáadott, nincs retrieval score
-                        "relevance": doc_relevances.get(doc_id, 0),
-                        "court": metadata.get("court", ""),
-                        "domain": metadata.get("domain", ""),
-                        "year": metadata.get("year", ""),
-                        "text": text,
-                    })
-        
-        # KRITIKUS: NE rendezzük át a slate-et relevancia szerint!
-        # A baseline sorrendnek tisztán az RRF fusion eredményét kell tükröznie.
-        # Az újonnan hozzáadott dokumentumok (rrf_score=0.0) automatikusan a sor végére kerülnek.
-        # Top-k limitálás
-        slate_candidates = slate_candidates[:top_k]
-        
+        # A slate sorrend = tiszta baseline RRF ranking (hibrid retriever eredménye)
         slates.append({
             "query_id": query_id,
             "slate": slate_candidates,  # Order = tiszta baseline RRF ranking (nincs relevancia leakage!)
         })
     
-    print(f"   ✅ Feldolgozva: {len(slates)}/{len(qrels)} query (filtered: {len(qrels) - len(slates)} query)")
+    print(f"   ✅ Feldolgozva: {len(slates)}/{len(qrels)} query")
     print(f"   📊 Slate méret: {SLATE_SIZE_TRAINING} chunk/query (training), {SLATE_SIZE_CHUNKS} candidate pool")
-    print(f"   📊 Minimum releváns dokumentum: {MIN_RELEVANT_DOCS_IN_SLATE} rel>=1 / slate")
+    print(f"   📊 Tiszta RRF sorrend: nincs relevancia-bónusz, nincs extra chunk, nincs qrels-alapú filtering")
     
     return slates
 
@@ -424,12 +286,6 @@ def main():
     qrels = load_qrels(args.qrels)
     print(f"   ✅ {len(qrels)} query betöltve")
     
-    # 1.1. Build high-relevance mapping
-    print(f"\n🎯 High-relevance doc mapping építése...")
-    high_rel_docs = build_high_rel_mapping(qrels)
-    high_rel_count = sum(len(docs) for docs in high_rel_docs.values())
-    print(f"   ✅ {high_rel_count} relevancia==2 dokumentum {len(high_rel_docs)} query-ben")
-    
     # 2. Initialize retriever
     print(f"\n🔧 Retrieval modell inicializálása...")
     retriever = HybridRetriever()
@@ -440,18 +296,13 @@ def main():
     chunks_path = retriever.base_path / "data" / "processed" / "chunks.jsonl"
     chunk_cache = build_chunk_cache(chunks_path)
     
-    # 2.2. Build doc→chunk mapping
-    doc_chunks_map = build_doc_chunks_mapping(chunks_path)
-    
-    # 2.3. Set cache in retriever
+    # 2.2. Set cache in retriever
     retriever.set_chunk_cache(chunk_cache)
     
-    # 3. Prepare slates (no filtering - use all annotated queries)
+    # 3. Prepare slates (tiszta RRF sorrend, nincs relevancia-bónusz vagy extra chunk)
     slates = prepare_chunk_slates(
         qrels,
         retriever,
-        high_rel_docs,
-        doc_chunks_map,
         top_k=args.top_k,
     )
     

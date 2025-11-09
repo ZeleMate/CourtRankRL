@@ -85,8 +85,10 @@ GRPO_CURRICULUM_INITIAL_MEDIUM_RATIO = 0.40  # 40% medium
 GRPO_CURRICULUM_HARD_INJECTION_STEP = 150  # Hard példák injektálása 150 lépésenként
 GRPO_CURRICULUM_HARD_INJECTION_RATIO = 0.20  # 20% hard injection
 
-# Baseline metrics path (pre-computed from baseline_evaluation.ipynb)
-BASELINE_QUERY_METRICS_PATH = GRPO_POLICY_DIR / "baseline_query_metrics.csv"
+# Baseline metrics paths (pre-computed from baseline_evaluation.ipynb)
+BASELINE_RESULTS_JSONL = GRPO_POLICY_DIR / "baseline_results.jsonl"
+BASELINE_METRICS_JSON = GRPO_POLICY_DIR / "baseline_metrics.json"
+BASELINE_QUERY_METRICS_CSV = GRPO_POLICY_DIR / "baseline_query_metrics.csv"
 
 # Unsloth + vLLM optimizations:
 # - Batch 4 (vs 2): 50% memory savings from Unsloth gradient checkpointing
