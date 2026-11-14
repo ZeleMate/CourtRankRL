@@ -316,18 +316,18 @@ IMPORTANT: Base your judgment on LEGAL SUBSTANCE and CONTEXT, not superficial ke
 def get_annotation_user_prompt(query_text: str, documents: list) -> str:
     """
     User prompt annotáláshoz.
-    
+
     Args:
         query_text: Query szöveg
         documents: Lista dict-ekről: {doc_id, chunk_text}
-    
+
     Returns:
         Formázott user prompt
     """
     prompt = f"LEGAL SEARCH QUERY TO EVALUATE:\n\"{query_text}\"\n\n"
     prompt += f"TASK: Evaluate the relevance of {len(documents)} court decision excerpts to this query.\n\n"
     prompt += "=" * 80 + "\n\n"
-    
+
     for i, doc in enumerate(documents, 1):
         prompt += f"DOCUMENT {i}:\n"
         prompt += f"  ID: {doc['doc_id']}\n"
@@ -335,7 +335,7 @@ def get_annotation_user_prompt(query_text: str, documents: list) -> str:
             prompt += f"  Chunk ID: {doc['chunk_id']}\n"
         prompt += f"  Content:\n  \"\"\"\n  {doc['chunk_text']}\n  \"\"\"\n\n"
         prompt += "-" * 80 + "\n\n"
-    
+
     prompt += "OUTPUT INSTRUCTIONS:\n"
     prompt += "Return EXACTLY one TSV row per document in this format:\n"
     prompt += "query_text<TAB>doc_id<TAB>relevance_score\n\n"
@@ -457,7 +457,7 @@ def save_results(results: list, output_path: Path, mode: str = "w") -> None:
 def print_stats(results: list) -> None:
     """Egyszerű statisztika printelés."""
     df = pd.DataFrame(results, columns=["query_id", "doc_id", "relevance"])
-    
+
     print(f"\n📊 Statisztikák:")
     print(f"  Összes sor: {len(df)}")
     print(f"  Unique query: {df['query_id'].nunique()}")
@@ -470,17 +470,17 @@ def print_stats(results: list) -> None:
 def main():
     print("🚀 AI Annotátor indítás")
     print("=" * 60)
-    
+
     # 1. Load data
     print("📖 Adatok betöltése...")
     golden_df = load_qrels(GOLDEN_QRELS)
     input_df = load_qrels(INPUT_QRELS)
     chunks_map = load_chunks_mapping()
-    
+
     # 2. Few-shot examples
     print("\n📝 Few-shot példák generálása...")
     fewshot = generate_fewshot_examples(golden_df, chunks_map, FEWSHOT_SAMPLES)
-    
+
     # 3. Annotate
     print(f"\n🔍 Annotálás ({len(input_df)} sor)...")
     results = annotate_all(input_df, chunks_map, fewshot, OUTPUT_QRELS)
@@ -488,10 +488,10 @@ def main():
     # 4. Végső összesítés (minden eredmény már mentve)
     print("\n💾 Összes eredmény már streamingben mentve!")
     print(f"   ✅ Teljes eredmény: {len(results)} annotáció")
-    
+
     # 5. Stats
     print_stats(results)
-    
+
     print("\n✅ Kész!")
     print(f"\n💡 Következő lépés:")
     print(f"   python scripts/validate_qrels.py --qrels-file {OUTPUT_QRELS}")

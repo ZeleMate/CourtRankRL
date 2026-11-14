@@ -107,7 +107,7 @@ class BM25Index:
         # KRITIKUS FIX: Case-insensitive tokenization magyar nyelvhez
         # 'Család' == 'család' == 'CSALÁD'
         texts_lower = [text.lower() for text in texts]
-        
+
         # BM25S stopwords: None → empty list (agents.md: no stopwords for Hungarian)
         stopwords_param = config.BM25_STOPWORDS if config.BM25_STOPWORDS is not None else []
         tokenized_result = bm25s.tokenize(
@@ -153,12 +153,12 @@ class BM25Index:
     def build_index(self, chunks_jsonl: Path) -> None:
         """
         BM25S index építése chunks JSONL fájlból.
-        
+
         Optimalizálva pandas.read_json() használatával (agents.md szerint) - 10-30x gyorsabb
         mint kézi json.loads() parsing 2.9M soros fájlnál.
         """
         import pandas as pd
-        
+
         print(f"BM25S index építése: {chunks_jsonl}")
 
         # JSONL fájl beolvasása pandas-szal (chunked reading memória-hatékonyság miatt)
@@ -170,7 +170,7 @@ class BM25Index:
                 # Chunk ID és text kinyerése
                 valid_mask = chunk_df['chunk_id'].notna() & chunk_df['text'].notna()
                 valid_df = chunk_df[valid_mask]
-                
+
                 texts.extend(valid_df['text'].astype(str).str.strip().tolist())
                 chunk_ids.extend(valid_df['chunk_id'].astype(str).str.strip().tolist())
         except (ValueError, FileNotFoundError) as e:

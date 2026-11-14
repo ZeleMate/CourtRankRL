@@ -1,0 +1,50 @@
+version: 2
+updates:
+  # Copier for template-update.yml (.github/tools/uv.lock), locked apart from the app.
+  - package-ecosystem: uv
+    directory: /.github/tools
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      ci-tools:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    # Third-party actions wait 7 days. The central workflows are our own, so they don't.
+    cooldown:
+      default-days: 7
+      exclude: ["ZeleMate/workflows*"]
+    groups:
+      # Apart from `actions`, so a red central bump doesn't block unrelated updates.
+      central-workflows:
+        patterns: ["ZeleMate/workflows*"]
+      actions:
+        patterns: ["*"]
+        exclude-patterns: ["ZeleMate/workflows*"]
+    ignore:
+      # A major central release needs caller edits, so it arrives with a template update.
+      - dependency-name: "ZeleMate/workflows*"
+        update-types: ["version-update:semver-major"]
+    commit-message:
+      prefix: ci
+
+  # Named in the `extra_ecosystems` answer: this repo's own stack, not a managed language.
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+    groups:
+      uv-minor-patch:
+        update-types: [minor, patch]
+    commit-message:
+      prefix: deps

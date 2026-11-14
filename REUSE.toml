@@ -1,0 +1,7 @@
+version = 1
+
+[[annotations]]
+path = "**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "Zelenyiánszki Máté"
+SPDX-License-Identifier = "MIT"
