@@ -2,8 +2,7 @@
 _commit: v0.6.0
 _src_path: gh:ZeleMate/repo-template
 agentic: false
-ai_reviewers:
-- claude
+ai_reviewers: []
 author_email: 179591691+ZeleMate@users.noreply.github.com
 author_name: Zelenyiánszki Máté
 description: Retrieval and GRPO reranking over Hungarian court decisions
