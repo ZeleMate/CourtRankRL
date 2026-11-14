@@ -1,0 +1,23 @@
+# OSV-Scanner's accept list for uv.lock (the central security workflow scans it).
+# Every entry has a reason and an ignoreUntil date, after which the scan fails again
+# and the entry gets re-checked. Remove an entry as soon as a fixed version is locked.
+
+[[IgnoredVulns]]
+id = "GHSA-6655-6qjp-jx7x"
+ignoreUntil = 2027-02-14
+reason = "soupsieve 2.10 (4.x needs Python 3.12+; this project is pinned to 3.11), reached only through the local jupyter dev dependencies (nbconvert), never with untrusted selectors."
+
+[[IgnoredVulns]]
+id = "GHSA-7g44-g9rc-x53w"
+ignoreUntil = 2027-02-14
+reason = "soupsieve 2.10 (4.x needs Python 3.12+; this project is pinned to 3.11), reached only through the local jupyter dev dependencies (nbconvert), never with untrusted selectors."
+
+[[IgnoredVulns]]
+id = "GHSA-mmhr-3c5m-f64f"
+ignoreUntil = 2027-02-14
+reason = "soupsieve 2.10 (4.x needs Python 3.12+; this project is pinned to 3.11), reached only through the local jupyter dev dependencies (nbconvert), never with untrusted selectors."
+
+[[IgnoredVulns]]
+id = "GHSA-5cjw-f85j-cv6r"
+ignoreUntil = 2026-12-14
+reason = "tornado open redirect in the local jupyter dev dependencies. The fix (6.6.1, 2026-11-09) is still inside the 7-day uv cooldown; lock it after that."

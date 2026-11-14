@@ -1,0 +1,23 @@
+name: Feature / task
+description: A change to build. Written so a coding agent can implement it and `spec-review` can check it.
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: What should be possible afterwards, and why?
+    validations:
+      required: true
+  - type: textarea
+    id: criteria
+    attributes:
+      label: Acceptance criteria
+      description: Checkable statements, one per line.
+      placeholder: |
+        - [ ] …
+    validations:
+      required: true
+  - type: textarea
+    id: non-goals
+    attributes:
+      label: Out of scope

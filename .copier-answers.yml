@@ -1,0 +1,20 @@
+# Changes here will be overwritten by Copier. Do not edit by hand; run `copier update`.
+_commit: v0.6.0
+_src_path: gh:ZeleMate/repo-template
+agentic: false
+ai_reviewers:
+- claude
+author_email: 179591691+ZeleMate@users.noreply.github.com
+author_name: Zelenyiánszki Máté
+description: Retrieval and GRPO reranking over Hungarian court decisions
+extra_ecosystems:
+- uv
+github_owner: ZeleMate
+github_plan: free
+languages: []
+license: MIT
+project_name: CourtRankRL
+project_slug: courtrankrl
+quality_platform: sonarqube-cloud
+sonar_organization: zelemate
+visibility: public

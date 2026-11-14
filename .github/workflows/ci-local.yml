@@ -1,0 +1,26 @@
+name: Local CI
+
+# This file is yours. The template wrote it once and never updates it.
+# Put the CI jobs for anything the template doesn't manage here: another language,
+# a different toolchain, a build, a deploy check. ci.yml calls this workflow on every
+# PR and push, and the merge gate (ci-ok) waits for it, so a failing job here blocks the merge.
+#
+# Rules for jobs in this file:
+# - No job may need a secret. Dependabot PRs get no Actions secrets, so a job that
+#   needs one would fail on every Dependabot PR and stall automerge.
+# - Pin every action to a full commit SHA with a version comment.
+# - Give each job only the permissions it needs; ci.yml grants this workflow contents: read.
+on:
+  workflow_call:
+
+permissions: {}
+
+jobs:
+  # Replace this with your own jobs. A workflow needs at least one job.
+  no-op:
+    name: no local jobs yet
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - run: echo "No local CI jobs yet. Add them to .github/workflows/ci-local.yml."
