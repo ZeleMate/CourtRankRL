@@ -42,6 +42,8 @@ build-backend = "hatchling.build"
 packages = ["src"]
 
 [tool.uv]
+# Supply-chain cooldown: ignore releases published in the last 7 days.
+exclude-newer = "7 days"
 dev-dependencies = [
     "jupyter",
     "ipykernel",
@@ -49,4 +51,3 @@ dev-dependencies = [
 
 [project.scripts]
 courtrankrl = "src.cli:main"
-
