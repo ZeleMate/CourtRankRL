@@ -1,0 +1,6 @@
+# actionlint 1.7.12 does not yet understand GitHub's self-repository `uses: $/...` syntax
+# (GA July 2026; recommended by GitHub and zizmor). Remove this once actionlint supports it.
+paths:
+  .github/workflows/**/*.{yml,yaml}:
+    ignore:
+      - 'reusable workflow call "\$/'

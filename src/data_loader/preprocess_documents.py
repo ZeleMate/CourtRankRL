@@ -54,7 +54,7 @@ def minimal_normalize_text(text: str) -> str:
 def extract_metadata_from_path(filepath: Path) -> Dict[str, str]:
     """
     Metaadat kinyerése a fájl útvonalából.
-    
+
     Könyvtárstruktúra: /data/raw/[Bíróság]/[jogterület]/[case_id]/[fájlnév].DOCX
     Az évszámot NEM a könyvtárból, hanem az ügyszámból nyerjük ki a regex alapú feldolgozással.
     """
@@ -88,7 +88,7 @@ def extract_metadata_from_path(filepath: Path) -> Dict[str, str]:
 def extract_metadata_from_docling_text(text: str, max_lines: int = 30, check_end_for_date: bool = True) -> Dict[str, str]:
     """
     Metadata kinyerése a dokumentum szövegéből.
-    
+
     Args:
         text: A dokumentum szövege
         max_lines: Maximum hány sort vizsgáljon az elején (default: 30)
@@ -110,19 +110,19 @@ def extract_metadata_from_docling_text(text: str, max_lines: int = 30, check_end
         # === 1. TÖRVÉNYSZÉKI FORMÁTUMOK (pl. 5.G.20.033/2023) ===
         r'(\d+\.[A-Z]{1,3}\.\d+\.\d+/\d{4}\.?\s+szám)',
         r'(\d+\.[A-Z]{1,3}\.\d+\.\d+/\d{4})',
-        
+
         # === 2. JÁRÁSBÍRÓSÁGI FORMÁTUMOK (pl. 14.B.105/2021/136) ===
         r'(\d+\.[A-Z]{1,3}\.\d+/\d{4}/\d+\.?\s+szám)',
         r'(\d+\.[A-Z]{1,3}\.\d+/\d{4}/\d+)',
-        
+
         # === 3. TÖBBBETŰS KÓDOK (pl. 14.BPK.694/2020/4, 16.FK.43/2016/12) ===
         r'(\d+\.[A-Z][a-z]{1,3}\.\d+/\d{4}/\d+\.?\s+szám)',
         r'(\d+\.[A-Z][a-z]{1,3}\.\d+/\d{4}/\d+)',
-        
+
         # === 4. RÓMAI SZÁMOS FORMÁTUMOK (pl. Bf.II.123/2020/5) ===
         r'(Bf\.[IVXLCDM]+\.\d+/\d{4}/\d+\.?\s+szám)',
         r'(Bf\.[IVXLCDM]+\.\d+/\d{4}/\d+)',
-        
+
         # === 5. P-BETŰS FORMÁTUMOK ===
         # P kezdetű egyszerű (pl. P.20.126/2023/5)
         r'(P\.\d+\.\d+/\d{4}/\d+\.?\s+szám)',
@@ -130,15 +130,15 @@ def extract_metadata_from_docling_text(text: str, max_lines: int = 30, check_end
         # Szám + P kezdetű (pl. 6.P.20.126/2023/5)
         r'(\d+\.P\.\d+\.\d+/\d{4}/\d+\.?\s+szám)',
         r'(\d+\.P\.\d+\.\d+/\d{4}/\d+)',
-        
+
         # === 6. FELLEBBVITELI FORMÁTUMOK (Kfv, Pfv, Kfv) ===
         r'([KPk][fF][vV][\._]\d+[\._]\d+/\d{4}/\d+\.?\s+szám)',
         r'([KPk][fF][vV][\._]\d+[\._]\d+/\d{4}/\d+)',
-        
+
         # === 7. SPECIÁLIS KÓDOK (Are, Fk, Bk, stb.) ===
         r'([A-Z][a-z]{1,2}[\._]\d+[\._]\d+/\d{4}/\d+\.?\s+szám)',
         r'([A-Z][a-z]{1,2}[\._]\d+[\._]\d+/\d{4}/\d+)',
-        
+
         # === 8. RÉGEBBI/ÁLTALÁNOS FORMÁTUMOK (fallback) ===
         # Egyetlen nagybetű kód (régi stílus)
         r'(\d+\.[A-Z]\.\d+/\d{4}/\d+\.?\s+szám)',
@@ -177,7 +177,7 @@ def extract_metadata_from_docling_text(text: str, max_lines: int = 30, check_end
             r'\b(\d{4})\.\s+(?:január|február|március|április|május|június|július|augusztus|szeptember|október|november|december)\s+\d{1,2}\.',
             r',\s*(\d{4})\.\s+\w+\s+\d{1,2}\.',  # Általános: ", 2020. szó szám."
         ]
-        
+
         for line in reversed(end_lines):
             candidate = line.strip()
             if not candidate:
@@ -205,7 +205,7 @@ def extract_metadata_from_docling_text(text: str, max_lines: int = 30, check_end
         domain_match = re.match(r'^(\d+[-_.])?([A-Za-z]+)', case_id)
         if domain_match:
             domain = domain_match.group(2).upper()
-    
+
     return {'court': court, 'doc_id': case_id, 'year': year, 'domain': domain}
 
 
@@ -241,12 +241,12 @@ def list_raw_documents(raw_root: Path) -> List[Path]:
 def load_processed_paths(manifest_path: Path, raw_root: Path, chunks_file: Path) -> Set[str]:
     """
     Betölti a már feldolgozott fájlok útvonalait manifest és chunks fájlból.
-    
+
     Optimalizálva pandas.read_json() használatával (agents.md szerint) - 10-30x gyorsabb
     mint kézi json.loads() parsing nagy fájloknál.
     """
     import pandas as pd
-    
+
     processed_paths: Set[str] = set()
     legacy_doc_ids: Set[str] = set()
 
@@ -254,7 +254,7 @@ def load_processed_paths(manifest_path: Path, raw_root: Path, chunks_file: Path)
     if manifest_path.exists():
         try:
             df_manifest = pd.read_json(manifest_path, lines=True, encoding='utf-8')
-            
+
             # Raw path extraction
             for _, entry in df_manifest.iterrows():
                 raw_path = entry.get('raw_path') or entry.get('source_path')
@@ -331,7 +331,7 @@ def process_single_file_worker(filepath_str: str, raw_root_str: str, tmp_dir_str
 
         # Először gyűjtsük össze az ÖSSZES chunk-ot egy listába
         all_chunks: List[Dict[str, object]] = list(iter_docling_chunks(docling_doc))
-        
+
         if not all_chunks:
             print(f"Figyelmeztetés: Nincs chunk a dokumentumból: {filepath.name}")
             return None
@@ -341,14 +341,14 @@ def process_single_file_worker(filepath_str: str, raw_root_str: str, tmp_dir_str
         # Utolsó 2000 karakter a határozat dátumához (év kinyerése)
         first_text_parts: List[str] = []
         last_text_parts: List[str] = []
-        
+
         char_count = 0
         for chunk in all_chunks:
             text = chunk.get('text', '')
             if text and char_count < 2000:
                 first_text_parts.append(str(text))
                 char_count += len(str(text))
-        
+
         # Utolsó 2000 karakter gyűjtése (visszafelé haladva)
         char_count = 0
         for chunk in reversed(all_chunks):

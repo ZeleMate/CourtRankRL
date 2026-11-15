@@ -1,0 +1,7 @@
+# Gitleaks findings accepted after review. Never add a secret that is still valid.
+# OpenAI API key committed in configs/config.py in April 2025 and removed since; the owner
+# confirmed it was revoked (recorded 2026-11-14). History is not rewritten (repo-template ADR 0002).
+97c70e4652bedd6751f86ac4766bce96583376c3:configs/config.py:openai-api-key:34
+453568ea85eed1298e0cfaf013682a86292a23e7:configs/config.py:openai-api-key:34
+fcbd7535edd757d3090b7b3d7fcde1f53608a807:configs/config.py:openai-api-key:14
+b2db67af6d824a924c6513ffb5c1b0ecc13935f2:configs/config.py:openai-api-key:14

@@ -64,7 +64,7 @@ def query_command(query: str, top_k: int = 10):
     try:
         # Retriever inicializálása
         retriever = HybridRetriever()
-        
+
         print("Megjegyzés: GRPO reranking csak cloud-on (agents.md specifikáció szerint)")
 
         # Hibrid baseline retrieval (agents.md 3. lépés)
@@ -157,7 +157,7 @@ AJÁNLOTT WORKFLOW (szakdolgozat):
   2. Generate FAISS index: gemma_embedding_runpod.ipynb
   3. Baseline eval: notebooks/baseline_evaluation.ipynb
   4. GRPO training: grpo_train_runpod.ipynb (cloud)
-  
+
 Megjegyzés: RRF (Reciprocal Rank Fusion) baseline paraméter-mentesen működik
         """
     )

@@ -27,24 +27,24 @@ from src.scripts.hybrid_retrieval import HybridRetriever
 GRPO_SLATE_SIZE = getattr(config, "GRPO_SLATE_SIZE", 20)
 
 def prepare_training_slates(
-    retriever: HybridRetriever, 
-    qrels: Dict[str, Dict[str, int]], 
+    retriever: HybridRetriever,
+    qrels: Dict[str, Dict[str, int]],
     output_path: Optional[Path] = None
 ) -> List[Dict]:
     """
     Prepare baseline candidate slates for GRPO training.
     Agents.md: serializes baseline candidate slates into JSONL for GRPO training.
-    
+
     **CHUNK-BASED**: Uses top-scoring chunks (not doc-level aggregation) to provide
     relevant context to the GRPO model. Each slate contains the most relevant chunks
     as determined by BM25 and FAISS retrieval.
-    
+
     Args:
         retriever: HybridRetriever instance
         qrels: Relevance judgments (query_id -> doc_id -> relevance)
         output_path: Optional path to save slates as JSONL (for cloud training)
                      If None, returns in-memory list only (for local training)
-    
+
     Returns:
         List of slate dictionaries
     """
@@ -86,21 +86,21 @@ def prepare_training_slates(
             # Add metadata and relevance labels
             for candidate in sorted_chunk_candidates:
                 chunk_id = candidate["chunk_id"]
-                
+
                 # Get doc_id from chunk_id
                 doc_id = retriever._chunk_id_to_doc_id(chunk_id)
                 candidate["doc_id"] = doc_id
-                
+
                 # Relevance from qrels (doc-level)
                 candidate["relevance"] = relevance_data.get(doc_id, 0)
                 candidate["query_id"] = query_id
-                
+
                 # Metadata from chunk (court, domain, year, FULL chunk text)
                 chunk_meta = retriever.chunk_metadata.get(chunk_id, {}) if retriever.chunk_metadata else {}
                 candidate["court"] = chunk_meta.get("court", "")
                 candidate["domain"] = chunk_meta.get("domain", "")
                 candidate["year"] = chunk_meta.get("year", "")
-                
+
                 # FULL chunk text (not preview!) - this is the key improvement
                 # Load from chunks.jsonl to get complete text
                 candidate["text"] = chunk_meta.get("text_preview", "")  # fallback to 500 char preview
@@ -137,8 +137,8 @@ def prepare_training_slates(
 
 # Backward compatibility wrapper
 def export_slates_for_grpo_training(
-    retriever: HybridRetriever, 
-    qrels: Dict[str, Dict[str, int]], 
+    retriever: HybridRetriever,
+    qrels: Dict[str, Dict[str, int]],
     output_path: Path
 ) -> List[Dict]:
     """Backward compatibility wrapper for prepare_training_slates()."""
@@ -146,7 +146,7 @@ def export_slates_for_grpo_training(
 
 def load_qrels(qrels_file: Path) -> Dict[str, Dict[str, int]]:
     """Load qrels file for training.
-    
+
     Agents.md specifies: qrels file must contain doc_id values (NOT chunk_id).
     Format: tab-separated with header `query_id\tdoc_id\trelevance`
     """
@@ -168,7 +168,7 @@ def load_qrels(qrels_file: Path) -> Dict[str, Dict[str, int]]:
                 if query_id not in qrels:
                     qrels[query_id] = {}
                 qrels[query_id][doc_id] = relevance
-        
+
         # Process remaining lines
         for line in f:
             parts = line.strip().split('\t')

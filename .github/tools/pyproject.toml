@@ -1,0 +1,16 @@
+# Copier, for template-update.yml, locked with hashes apart from the app (uv.lock next to this file).
+# The tools CI itself runs (pre-commit, diff-cover, Semgrep) are locked in ZeleMate/workflows.
+# `uvx tool@version` would pin the tool but resolve its dependencies fresh on every
+# run; a lockfile pins all of them. Run with `uv run --no-build --project .github/tools <tool>`.
+[project]
+name = "ci-tools"
+version = "0"
+requires-python = ">=3.13"
+dependencies = [
+    "copier>=9.19",
+]
+
+[tool.uv]
+package = false
+# Same 7-day supply-chain cooldown as the app's dependencies.
+exclude-newer = "7 days"

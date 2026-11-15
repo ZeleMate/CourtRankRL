@@ -280,16 +280,16 @@ def rrf_fusion(bm25_results: List[Tuple[str, float]],
                k: int = RRF_K) -> List[Tuple[str, float]]:
     """
     Reciprocal Rank Fusion (RRF) - agents.md szerint, ranx library használatával.
-    
+
     ranx: TREC-validated RRF implementáció, több fusion stratégia támogatással.
     """
     # ranx Run formátum: {query_id: {doc_id: score}}
     bm25_run = Run({query_id: {doc_id: score for doc_id, score in bm25_results}})
     dense_run = Run({query_id: {doc_id: score for doc_id, score in dense_results}})
-    
+
     # RRF fusion (ranx optimalizált implementációval)
     fused_run = fuse([bm25_run, dense_run], method="rrf")
-    
+
     # Visszaalakítás lista formátumba, csökkenő sorrend szerint
     fused_scores = [(doc_id, score) for doc_id, score in fused_run.run[query_id].items()]
     return sorted(fused_scores, key=lambda x: x[1], reverse=True)
@@ -361,7 +361,7 @@ class HybridRetriever:
     def set_chunk_cache(self, cache: Dict[str, Dict[str, str]]):
         """
         Beállítja a chunk cache-t külső forrásból (pl. prepare_grpo_slates.py).
-        
+
         Args:
             cache: {chunk_id: {"text": str, "court": str, "domain": str, "year": str}}
         """
@@ -436,16 +436,16 @@ class HybridRetriever:
         """
         if not bm25_chunks and not faiss_chunks:
             return []
-        
+
         # ranx Run formátum: {query_id: {chunk_id: score}}
         query_id = "chunk_rrf"
-        
+
         bm25_run = Run({query_id: {chunk_id: score for chunk_id, score in bm25_chunks}})
         faiss_run = Run({query_id: {chunk_id: score for chunk_id, score in faiss_chunks}})
-        
+
         # RRF fusion (ranx optimalizált implementációval)
         fused_run = fuse([bm25_run, faiss_run], method="rrf")
-        
+
         # Visszaalakítás lista formátumba, csökkenő sorrend szerint
         fused_scores = [(chunk_id, score) for chunk_id, score in fused_run.run[query_id].items()]
         return sorted(fused_scores, key=lambda x: x[1], reverse=True)
@@ -453,11 +453,11 @@ class HybridRetriever:
     def get_last_chunk_scores(self, source: str, top_k: Optional[int] = None) -> List[Tuple[str, float]]:
         """
         Visszaadja az utolsó retrieval chunk-szintű score-jait.
-        
+
         Args:
             source: "bm25", "dense", vagy "fused"
             top_k: Opcionális limit
-            
+
         Returns:
             [(chunk_id, score), ...] csökkenő sorrendben
         """
@@ -469,7 +469,7 @@ class HybridRetriever:
             scores = self.last_fused_chunk_order
         else:
             raise ValueError(f"Unknown source: {source}. Use 'bm25', 'dense', or 'fused'")
-        
+
         if top_k is not None and top_k > 0:
             return scores[:top_k]
         return scores
@@ -477,7 +477,7 @@ class HybridRetriever:
     def _load_chunk_texts(self, chunk_ids: List[str]) -> Dict[str, str]:
         """
         Betölti a teljes chunk szövegeket cache-ből (ha van), különben pandas chunked reading.
-        
+
         Returns:
             {chunk_id: full_text}
         """
@@ -490,15 +490,15 @@ class HybridRetriever:
                 else:
                     chunk_texts[chunk_id] = ""  # Fallback üres stringre
             return chunk_texts
-        
+
         # Fallback: pandas chunked reading (lassabb, de működik cache nélkül is)
         import pandas as pd
-        
+
         chunk_texts = {}
         chunk_ids_set = set(chunk_ids)
-        
+
         chunk_size = 10000  # Process 10k chunks at a time
-        
+
         for chunk_df in pd.read_json(self.chunks_path, lines=True, chunksize=chunk_size):
             for _, row in chunk_df.iterrows():
                 chunk_id = row.get('chunk_id')
@@ -508,7 +508,7 @@ class HybridRetriever:
                         break
             if len(chunk_texts) == len(chunk_ids_set):
                 break
-        
+
         return chunk_texts
 
     def get_doc_metadata(self, doc_id: str) -> Dict[str, str]:
@@ -526,12 +526,12 @@ class HybridRetriever:
                     }
             # Fallback if not found in cache
             return {"court": "", "domain": "", "year": ""}
-        
+
         # Fallback: pandas chunked reading (lassabb, de működik cache nélkül is)
         import pandas as pd
-        
+
         chunk_size = 10000
-        
+
         for chunk_df in pd.read_json(self.chunks_path, lines=True, chunksize=chunk_size):
             for _, row in chunk_df.iterrows():
                 chunk_id = row.get('chunk_id')
@@ -541,7 +541,7 @@ class HybridRetriever:
                         "domain": str(row.get('domain', '')),
                         "year": str(row.get('year', ''))
                     }
-        
+
         # Fallback if not found at all
         return {"court": "", "domain": "", "year": ""}
 

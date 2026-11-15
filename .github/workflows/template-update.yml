@@ -1,0 +1,45 @@
+name: Template update check
+
+# Opens an issue when the Copier template has a newer tagged version.
+# If the template repo is private, add a TEMPLATE_READ_TOKEN secret (fine-grained, contents:read on it).
+on:
+  schedule:
+    - cron: "41 6 * * 1"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+      - name: Check for template update
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TEMPLATE_READ_TOKEN: ${{ secrets.TEMPLATE_READ_TOKEN }}
+        run: |
+          if [ -n "$TEMPLATE_READ_TOKEN" ]; then
+            git config --global url."https://x-access-token:${TEMPLATE_READ_TOKEN}@github.com/".insteadOf "https://github.com/"
+          fi
+          set +e
+          UV_LOCKED=1 uv run --no-build --project .github/tools copier check-update --quiet
+          rc=$?
+          set -e
+          if [ "$rc" -eq 2 ]; then
+            title="Repo template update available"
+            if [ -z "$(gh issue list --state open --search "in:title \"$title\"" --json number --jq '.[].number')" ]; then
+              gh issue create --title "$title" --body "Run \`uvx copier update --trust\` locally, review the diff, and open a PR."
+            fi
+          elif [ "$rc" -ne 0 ]; then
+            echo "::error::copier check-update failed (rc=$rc). If the template repo is private, set the TEMPLATE_READ_TOKEN secret (see docs/SETUP.md)."
+            exit "$rc"
+          fi

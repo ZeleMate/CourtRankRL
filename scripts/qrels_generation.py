@@ -58,14 +58,14 @@ try:
     # pandas.read_json() gyorsabb mint kézi json.loads() parsing (agents.md szerint)
     import pandas as pd
     df_results = pd.read_json(INPUT_PATH, lines=True, encoding='utf-8')
-    
+
     # Dict konverzió
     for _, row in df_results.iterrows():
         query = row.get('query', '')
         doc_ids = row.get('doc_ids', [])
         if query and doc_ids:
             results[query] = doc_ids
-    
+
     print(f"✅ {len(results)} query betöltve")
 except (ValueError, FileNotFoundError) as e:
     print(f"❌ Hiba a retrieval eredmények betöltése során: {e}")

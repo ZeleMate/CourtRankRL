@@ -1,0 +1,19 @@
+name: Security
+
+# Weekly, so new advisories against unchanged code are caught. ci.yml calls the same
+# reusable workflow on every PR and push, where it feeds the merge gate.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 5 * * 1"
+
+permissions: {}
+
+jobs:
+  security:
+    uses: ZeleMate/workflows/.github/workflows/security.yml@95244ca1c8b62ab0f3d56aefee2c60348445d132  # v1.0.0
+    permissions:
+      contents: read
+    with:
+      # Semgrep runs on private repos; public repos use CodeQL default setup instead.
+      sast: false

@@ -1,3 +1,23 @@
+# Secrets — never commit
+.env
+.env.*
+*.pem
+*.key
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Virtualenvs (the CI tools in .github/tools have one too)
+.venv/
+
+# Claude Code personal files
+CLAUDE.local.md
+.claude/settings.local.json
+
+# Project
 # Python
 __pycache__/
 *.py[cod]
@@ -73,3 +93,4 @@ Thumbs.db
 data/processed/embeddings.npy
 data/index/faiss_index.bin
 data/index/chunk_id_map.npy
+!.github/tools/.python-version

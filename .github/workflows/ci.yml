@@ -1,0 +1,55 @@
+name: CI
+
+# Caller workflow: each job below calls a reusable workflow in ZeleMate/workflows, all pinned
+# to the same release SHA. Dependabot moves the pin through minor and patch releases; a major
+# arrives with a template update. This file is the template's: put jobs of your own in
+# ci-local.yml, which the `local` job below calls and the merge gate waits on.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  repo-lint:
+    uses: ZeleMate/workflows/.github/workflows/repo-lint.yml@95244ca1c8b62ab0f3d56aefee2c60348445d132  # v1.0.0
+    permissions:
+      contents: read
+
+  security:
+    uses: ZeleMate/workflows/.github/workflows/security.yml@95244ca1c8b62ab0f3d56aefee2c60348445d132  # v1.0.0
+    permissions:
+      contents: read
+    with:
+      # Semgrep runs on private repos; public repos use CodeQL default setup instead.
+      sast: false
+
+  # This repo's own jobs. ci-local.yml is written once by the template and never updated.
+  local:
+    uses: $/.github/workflows/ci-local.yml
+    permissions:
+      contents: read
+
+  # The merge gate: the single required status check for the ruleset.
+  # Fails if any job failed or was cancelled. repo-lint checks that every job is listed here.
+  ci-ok:
+    name: ci-ok
+    if: always()
+    needs:
+      - repo-lint
+      - security
+      - local
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "results: $RESULTS"
+          case "$RESULTS" in *failure*|*cancelled*) exit 1 ;; esac
