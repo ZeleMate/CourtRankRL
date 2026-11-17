@@ -1,6 +1,6 @@
 # Review rubric
 
-Used by AI reviewers (the Claude review workflow, the `code-reviewer` subagent) and by you when self-reviewing. Formatting, lint and types are already enforced by CI; do not comment on them.
+Used by AI reviewers (the Claude review workflow, the `/code-reviewer` skill) and by you when self-reviewing. Formatting, lint and types are already enforced by CI; do not comment on them.
 
 Report only findings you can point to in the diff. Prefer a concrete suggested change over a description. Say "no findings" when there are none.
 

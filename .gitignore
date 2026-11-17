@@ -93,4 +93,5 @@ Thumbs.db
 data/processed/embeddings.npy
 data/index/faiss_index.bin
 data/index/chunk_id_map.npy
+# Keep last: template files that broad rules above (`.python-version`, `/*.json`) must not hide.
 !.github/tools/.python-version
