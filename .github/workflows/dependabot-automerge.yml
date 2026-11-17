@@ -2,6 +2,8 @@ name: Dependabot automerge
 
 # Turns on auto-merge for Dependabot PRs that are not major updates. The merge still waits
 # for the merge gate (ci-ok), which the ruleset requires. Majors stay manual.
+# It merges the way the repo allows: the methods the repo settings and every ruleset on the
+# base branch permit, preferring squash, then a merge commit, then rebase.
 # Kept in this repo, not in the central workflow repo, because it holds write permissions.
 on:
   pull_request:
@@ -27,4 +29,20 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR_URL: ${{ github.event.pull_request.html_url }}
-        run: gh pr merge --auto --squash "$PR_URL"
+          BASE: ${{ github.event.pull_request.base.ref }}
+        run: |
+          # A setting the token can't see (null) counts as allowed; the rulesets still narrow it.
+          allowed=$(gh api "repos/$GITHUB_REPOSITORY" --jq '[
+            (select(.allow_squash_merge != false) | "squash"),
+            (select(.allow_merge_commit != false) | "merge"),
+            (select(.allow_rebase_merge != false) | "rebase")]')
+          rules=$(gh api "repos/$GITHUB_REPOSITORY/rules/branches/$BASE" \
+            --jq '[.[] | select(.type == "pull_request") | .parameters.allowed_merge_methods // empty]')
+          method=$(jq -rn --argjson a "$allowed" --argjson r "$rules" \
+            'reduce $r[] as $x ($a; map(select(. as $m | $x | index($m)))) | .[0] // empty')
+          if [ -z "$method" ]; then
+            echo "::error::no merge method is allowed by both the repo settings ($allowed) and the rulesets on $BASE ($rules)"
+            exit 1
+          fi
+          echo "merging with: $method"
+          gh pr merge --auto "--$method" "$PR_URL"

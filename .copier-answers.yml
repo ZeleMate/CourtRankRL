@@ -1,5 +1,5 @@
 # Changes here will be overwritten by Copier. Do not edit by hand; run `copier update`.
-_commit: v0.6.0
+_commit: v1.0.2
 _src_path: gh:ZeleMate/repo-template
 agentic: false
 ai_reviewers: []
@@ -15,5 +15,6 @@ license: MIT
 project_name: CourtRankRL
 project_slug: courtrankrl
 quality_platform: sonarqube-cloud
+repo_name: CourtRankRL
 sonar_organization: zelemate
 visibility: public
