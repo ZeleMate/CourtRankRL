@@ -6,7 +6,10 @@ Following the OWASP Secrets Management Cheat Sheet: centralise, prefer short-liv
 
 | Secret | Store | Used by | Rotation |
 |---|---|---|---|
-| `SONARQUBE_TOKEN` | Local environment (keychain), never in the repo | `.mcp.json` (SonarQube MCP server) | yearly |
+| `SONARQUBE_TOKEN` | Local environment (keychain), never in the repo | `.mcp.json` | yearly |
+| `TEMPLATE_READ_TOKEN` (only if the template repo is private) | GitHub Actions secret | `template-update.yml` | fine-grained PAT, contents:read on the template repo, ≤ 1 year |
+
+The machine-readable list is `.github/secret-requirements.json`; the GitHub audit reads it.
 
 Publishing to package registries uses **OIDC trusted publishing**: no stored registry tokens.
 
