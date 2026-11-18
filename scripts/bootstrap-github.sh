@@ -118,6 +118,36 @@ JSON
   fi
 fi
 
+# ------------------------------------------------------------------ secrets
+# The Actions secrets in this repo's secret requirements (.github/secret-requirements.json).
+# Prints true, false or unknown: is the template repo (_src_path in the answers file) private?
+template_private() {
+  local tpl p
+  tpl=$(sed -n 's/^_src_path: *//p' .copier-answers.yml 2>/dev/null | head -n 1 \
+    | sed -E -e "s/^['\"]//" -e "s/['\"]\$//" -e 's#^gh:##' -e 's#^(https://|git@)github\.com[:/]##' -e 's#\.git$##')
+  if printf '%s' "$tpl" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'; then
+    p=$(gh api "repos/$tpl" --jq .private 2>/dev/null || true)
+    case "$p" in true|false) echo "$p"; return ;; esac
+  fi
+  echo unknown
+}
+say "Secrets the workflows need"
+if [ "$DRY_RUN" = 1 ]; then
+  printf '  [dry-run] check that TEMPLATE_READ_TOKEN is set\n'
+else
+  SECRETS_SET=$(gh secret list --repo "$FULL" --json name --jq '.[].name' 2>/dev/null || true)
+  # Needed only while .github/workflows/template-update.yml is in the repo.
+  if [ ! -e ".github/workflows/template-update.yml" ]; then
+    ok "TEMPLATE_READ_TOKEN is not needed: .github/workflows/template-update.yml isn't in this repo"
+  elif [ "$(template_private)" = false ]; then
+    ok "TEMPLATE_READ_TOKEN is not needed: the template repo is public"
+  elif grep -qx TEMPLATE_READ_TOKEN <<<"$SECRETS_SET"; then
+    ok "TEMPLATE_READ_TOKEN is set"
+  else
+    warn "TEMPLATE_READ_TOKEN is not set (only if the template repo is private): the weekly template update check fails until it is (see the manual steps)"
+  fi
+fi
+
 # ------------------------------------------------------------------ manual steps
 say "Done. Remaining manual steps (also in docs/SETUP.md):"
 sed -n '/^## Manual steps/,$p' docs/SETUP.md | tail -n +2
