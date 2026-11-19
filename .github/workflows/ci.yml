@@ -30,6 +30,7 @@ jobs:
       sast: false
 
   # This repo's own jobs. ci-local.yml is written once by the template and never updated.
+  # `$/` is GitHub's self-repository syntax, not a typo for `./` (zizmor's self-repository audit).
   local:
     uses: $/.github/workflows/ci-local.yml
     permissions:
